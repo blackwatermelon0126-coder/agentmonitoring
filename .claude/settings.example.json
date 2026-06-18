@@ -1,0 +1,14 @@
+{
+  "_comment": "Hook 연동 설정 예시 — Phase 2 활성화 시 settings.json에 복사하여 사용",
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node D:/private/agentmonitoring/hooks/agent-monitor-hook.js" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node D:/private/agentmonitoring/hooks/agent-monitor-hook.js" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "node D:/private/agentmonitoring/hooks/agent-monitor-hook.js" }] }
+    ]
+  }
+}
