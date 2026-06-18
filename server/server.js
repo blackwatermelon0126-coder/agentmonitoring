@@ -2,7 +2,10 @@ const express = require('express');
 const { WebSocketServer } = require('ws');
 const http = require('http');
 const path = require('path');
+const pino = require('pino');
 const { ROLES, ROLE_NAMES } = require('./shared/roles');
+
+const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 const app = express();
 app.use(express.json());
@@ -34,7 +37,7 @@ const agentStates = Object.fromEntries(
 
 wss.on('connection', (ws) => {
     clients.add(ws);
-    console.log(`[WS] 클라이언트 연결. 현재: ${clients.size}명`);
+    logger.info({ event: 'ws_connect', clientCount: wss.clients.size }, 'WS client connected');
 
     // 초기 상태 + 최근 활동 전송
     ws.send(JSON.stringify({
@@ -45,7 +48,7 @@ wss.on('connection', (ws) => {
 
     ws.on('close', () => {
         clients.delete(ws);
-        console.log(`[WS] 클라이언트 해제. 현재: ${clients.size}명`);
+        logger.info({ event: 'ws_disconnect', clientCount: wss.clients.size }, 'WS client disconnected');
     });
 });
 
@@ -107,9 +110,12 @@ app.post('/hook/tool-use', (req, res) => {
             activity: activityEntry
         });
 
+        logger.info({ event: 'hook_received', tool, role, sessionId, status }, 'Hook received');
+
         clients.forEach(ws => {
             if (ws.readyState === 1) ws.send(message);
         });
+        logger.debug({ event: 'broadcast', clientCount: wss.clients.size, role }, 'Broadcast sent');
     }
 
     res.json({ ok: true });
@@ -202,12 +208,5 @@ app.post('/demo', (req, res) => {
 
 const PORT = 3300;
 server.listen(PORT, () => {
-    console.log(`====================================`);
-    console.log(`  Agent Monitor Server`);
-    console.log(`  http://localhost:${PORT}`);
-    console.log(`  2D: http://localhost:${PORT}/2d`);
-    console.log(`  3D: http://localhost:${PORT}/3d`);
-    console.log(`  API: http://localhost:${PORT}/api/status`);
-    console.log(`  Demo: POST http://localhost:${PORT}/demo`);
-    console.log(`====================================`);
+    logger.info({ event: 'server_start', port: PORT }, 'Server started');
 });
