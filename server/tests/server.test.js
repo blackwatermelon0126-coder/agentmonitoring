@@ -1,5 +1,6 @@
 /**
  * server.test.js — WJ_MONITORING-P3-A 단위테스트 (ZTRACE-5 T축)
+ *                  WJ_MONITORING-P2-C sessionId 기반 멀티세션 테스트 추가
  *
  * 대상: server.js 핵심 함수·엔드포인트
  * 프레임워크: vitest + supertest
@@ -9,6 +10,9 @@ import request from 'supertest';
 import {
     app,
     agentStates,
+    sessions,
+    DEFAULT_SESSION,
+    createSessionRoles,
     activityLog,
     toolToAction,
     inferRole,
@@ -170,7 +174,7 @@ describe('GET /api/roles', () => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// 5. GET /api/status — agentStates JSON 반환
+// 5. GET /api/status — agentStates + sessions JSON 반환 (P2-C 확장)
 // ──────────────────────────────────────────────────────────────
 describe('GET /api/status', () => {
     it('200 OK + JSON 객체 반환', async () => {
@@ -179,23 +183,45 @@ describe('GET /api/status', () => {
         expect(typeof res.body).toBe('object');
     });
 
-    it('5개 역할 키 포함', async () => {
+    it('agents + sessions 최상위 키 포함 (P2-C 구조)', async () => {
         const res = await request(app).get('/api/status');
-        expect(res.body).toHaveProperty('developer');
-        expect(res.body).toHaveProperty('devops');
-        expect(res.body).toHaveProperty('qa');
-        expect(res.body).toHaveProperty('pm');
-        expect(res.body).toHaveProperty('leader');
+        expect(res.body).toHaveProperty('agents');
+        expect(res.body).toHaveProperty('sessions');
     });
 
-    it('각 역할 상태는 role, status, action, detail 필드를 가짐', async () => {
+    it('agents — 5개 역할 키 포함 (하위호환)', async () => {
         const res = await request(app).get('/api/status');
-        Object.values(res.body).forEach(state => {
+        const { agents } = res.body;
+        expect(agents).toHaveProperty('developer');
+        expect(agents).toHaveProperty('devops');
+        expect(agents).toHaveProperty('qa');
+        expect(agents).toHaveProperty('pm');
+        expect(agents).toHaveProperty('leader');
+    });
+
+    it('agents — 각 역할 상태는 role, status, action, detail 필드를 가짐 (하위호환)', async () => {
+        const res = await request(app).get('/api/status');
+        Object.values(res.body.agents).forEach(state => {
             expect(state).toHaveProperty('role');
             expect(state).toHaveProperty('status');
             expect(state).toHaveProperty('action');
             expect(state).toHaveProperty('detail');
         });
+    });
+
+    it('sessions — default 세션이 존재함', async () => {
+        const res = await request(app).get('/api/status');
+        expect(res.body.sessions).toHaveProperty('default');
+    });
+
+    it('sessions[default] — 5개 역할 포함', async () => {
+        const res = await request(app).get('/api/status');
+        const defaultSession = res.body.sessions['default'];
+        expect(defaultSession).toHaveProperty('developer');
+        expect(defaultSession).toHaveProperty('devops');
+        expect(defaultSession).toHaveProperty('qa');
+        expect(defaultSession).toHaveProperty('pm');
+        expect(defaultSession).toHaveProperty('leader');
     });
 });
 
@@ -208,6 +234,9 @@ describe('POST /hook/tool-use', () => {
         agentStates['developer'].status = 'idle';
         agentStates['developer'].action = '';
         agentStates['developer'].tool = '';
+        // 테스트용 세션 정리
+        delete sessions['test-session-1'];
+        delete sessions['test-session-2'];
         activityLog.splice(0, activityLog.length);
     });
 
@@ -352,5 +381,110 @@ describe('POST /demo', () => {
         const validTools = ['Read', 'Edit', 'Bash', 'Grep', 'Write'];
         const res = await request(app).post('/demo').send({});
         expect(validTools).toContain(res.body.tool);
+    });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 10. sessionId 기반 멀티세션 지원 (P2-C)
+// ──────────────────────────────────────────────────────────────
+describe('sessionId 기반 멀티세션 지원 (P2-C)', () => {
+    beforeEach(() => {
+        // 테스트용 세션 격리
+        delete sessions['test-session-1'];
+        delete sessions['test-session-2'];
+        agentStates['developer'].status = 'idle';
+        agentStates['developer'].action = '';
+        agentStates['developer'].tool = '';
+        activityLog.splice(0, activityLog.length);
+    });
+
+    it('sessionId 포함 시 해당 세션에 독립 상태 생성', async () => {
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Edit', role: 'developer', sessionId: 'test-session-1', status: 'working' });
+        expect(sessions['test-session-1']).toBeDefined();
+        expect(sessions['test-session-1']['developer'].action).toBe('coding');
+        expect(sessions['test-session-1']['developer'].sessionId).toBe('test-session-1');
+    });
+
+    it('sessionId 미포함 시 default 세션(agentStates) 갱신 — 하위호환', async () => {
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Read', role: 'developer', status: 'working' });
+        expect(agentStates['developer'].action).toBe('reading');
+        expect(agentStates['developer'].status).toBe('working');
+    });
+
+    it('동일 role — 세션 2개 동시 활성화 시 상태 덮어쓰기 없음', async () => {
+        // 세션 1: developer가 Edit 중
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Edit', role: 'developer', sessionId: 'test-session-1', status: 'working' });
+
+        // 세션 2: 동일 role(developer)이 Bash 중
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Bash', role: 'developer', sessionId: 'test-session-2', status: 'working' });
+
+        // 각 세션 상태가 독립적으로 유지됨
+        expect(sessions['test-session-1']['developer'].action).toBe('coding');
+        expect(sessions['test-session-1']['developer'].tool).toBe('Edit');
+        expect(sessions['test-session-2']['developer'].action).toBe('building');
+        expect(sessions['test-session-2']['developer'].tool).toBe('Bash');
+    });
+
+    it('세션별 상태는 sessionId 필드를 포함', async () => {
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Read', role: 'developer', sessionId: 'test-session-1' });
+        expect(sessions['test-session-1']['developer'].sessionId).toBe('test-session-1');
+    });
+
+    it('GET /api/status — 세션 추가 후 sessions에 포함', async () => {
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Edit', role: 'developer', sessionId: 'test-session-1' });
+
+        const res = await request(app).get('/api/status');
+        expect(res.body.sessions).toHaveProperty('test-session-1');
+        expect(res.body.sessions['test-session-1']['developer'].tool).toBe('Edit');
+    });
+
+    it('GET /api/status — sessionId 정보 포함 확인', async () => {
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Grep', role: 'qa', sessionId: 'test-session-2' });
+
+        const res = await request(app).get('/api/status');
+        expect(res.body.sessions['test-session-2']['qa'].sessionId).toBe('test-session-2');
+    });
+
+    it('tool-done — sessionId 지정 시 해당 세션만 idle 전환', async () => {
+        // 두 세션 모두 working 상태로 설정
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Edit', role: 'developer', sessionId: 'test-session-1', status: 'working' });
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Bash', role: 'developer', sessionId: 'test-session-2', status: 'working' });
+
+        // 세션 1만 idle 전환
+        await request(app)
+            .post('/hook/tool-done')
+            .send({ role: 'developer', sessionId: 'test-session-1' });
+
+        expect(sessions['test-session-1']['developer'].status).toBe('idle');
+        expect(sessions['test-session-2']['developer'].status).toBe('working');
+    });
+
+    it('createSessionRoles — DEFAULT_SESSION 외 세션 초기화 정상 동작', () => {
+        const newSession = createSessionRoles('new-session-abc');
+        expect(newSession).toHaveProperty('developer');
+        expect(newSession['developer'].sessionId).toBe('new-session-abc');
+        expect(newSession['developer'].status).toBe('idle');
+    });
+
+    it('DEFAULT_SESSION 상수는 "default"', () => {
+        expect(DEFAULT_SESSION).toBe('default');
     });
 });

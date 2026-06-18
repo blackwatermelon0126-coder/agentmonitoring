@@ -12,8 +12,32 @@ const __dirname = path.dirname(__filename);
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
+// ── 서버 시작 시각 (uptime 계산용) — P4-B ─────────────────────
+const SERVER_START = Date.now();
+
+// ── 이벤트 카운터 — P4-B ──────────────────────────────────────
+let eventCount = 0;
+let lastEventAt = null;
+
 const app = express();
 app.use(express.json());
+
+// ── origin 루프백 검증 미들웨어 — P4-B ────────────────────────
+// /hook/tool-use, /hook/tool-done, /demo 엔드포인트에 적용.
+// /api/status, /api/roles, /2d, /3d 는 제한 없음.
+const LOOPBACK_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+function requireLoopback(req, res, next) {
+    if (process.env.ALLOW_REMOTE_HOOKS === 'true') {
+        return next();
+    }
+    const remote = req.socket.remoteAddress;
+    if (LOOPBACK_ADDRS.has(remote)) {
+        return next();
+    }
+    logger.warn({ event: 'loopback_rejected', remote }, 'Hook rejected: non-loopback origin');
+    res.status(403).json({ error: 'forbidden', reason: 'loopback only' });
+}
 
 // 정적 파일 서빙 (2D/3D 클라이언트)
 app.use('/2d', express.static(path.join(__dirname, '..', 'phaser2d')));
@@ -38,19 +62,70 @@ function pushActivity(entry) {
     if (activityLog.length > ACTIVITY_LIMIT) activityLog.shift();
 }
 
-// 에이전트 상태 관리 — ROLE_NAMES(SSoT) 기반 초기화
-const agentStates = Object.fromEntries(
-    ROLES.map(r => [r.name, { role: r.label, status: 'idle', action: '', detail: '', lastUpdate: Date.now() }])
-);
+/**
+ * 세션별 에이전트 상태 관리 (P2-C: sessionId 기반 멀티세션 지원)
+ *
+ * 구조: sessions[sessionId][role] = { status, action, detail, tool, lastUpdate, sessionId, role }
+ * - sessionId 미전달 시 'default' 세션으로 폴백 (하위호환)
+ * - 'default' 세션은 기존 역할 키 단위 접근과 동일하게 동작한다.
+ */
+const DEFAULT_SESSION = 'default';
+
+/**
+ * 특정 세션의 초기 역할 상태 맵을 생성한다.
+ * @param {string} sessionId - 세션 식별자
+ * @returns {Record<string, object>} 역할 → 상태 맵
+ */
+function createSessionRoles(sessionId) {
+    return Object.fromEntries(
+        ROLES.map(r => [r.name, {
+            role: r.label,
+            status: 'idle',
+            action: '',
+            detail: '',
+            tool: '',
+            lastUpdate: Date.now(),
+            sessionId,
+            roleName: r.name
+        }])
+    );
+}
+
+// sessions: Map<sessionId, Record<roleName, state>>
+// 최초에 default 세션만 존재한다.
+const sessions = {
+    [DEFAULT_SESSION]: createSessionRoles(DEFAULT_SESSION)
+};
+
+/**
+ * 세션 내 역할 상태를 가져온다. 세션이 없으면 자동 생성한다.
+ * @param {string} sessionId
+ * @param {string} roleName
+ * @returns {object} 상태 객체 참조
+ */
+function getOrCreateSessionRole(sessionId, roleName) {
+    if (!sessions[sessionId]) {
+        sessions[sessionId] = createSessionRoles(sessionId);
+        logger.info({ event: 'session_created', sessionId }, 'New session registered');
+    }
+    return sessions[sessionId][roleName];
+}
+
+/**
+ * agentStates — 하위호환 뷰 (default 세션 역할 상태 직접 참조)
+ * 기존 코드가 agentStates[role]로 접근하는 테스트·엔드포인트와 호환된다.
+ */
+const agentStates = sessions[DEFAULT_SESSION];
 
 wss.on('connection', (ws) => {
     clients.add(ws);
     logger.info({ event: 'ws_connect', clientCount: wss.clients.size }, 'WS client connected');
 
-    // 초기 상태 + 최근 활동 전송
+    // 초기 상태 + 최근 활동 전송 — sessions 전체 포함 (P2-C)
     ws.send(JSON.stringify({
         type: 'init',
         agents: agentStates,
+        sessions,
         activity: activityLog
     }));
 
@@ -87,84 +162,123 @@ function inferRole(toolName) {
 }
 
 // Hook 수신 엔드포인트 (Claude Code → 서버)
-app.post('/hook/tool-use', (req, res) => {
+// P2-C: sessionId 포함 시 세션별 독립 상태 유지. 미포함 시 'default' 폴백 (하위호환).
+// P4-B: requireLoopback — 루프백 외 주소에서 온 요청은 403 반환.
+app.post('/hook/tool-use', requireLoopback, (req, res) => {
     const { tool, role, status, detail, params, event, sessionId, result } = req.body;
     const agentKey = (role || 'developer').toLowerCase();
+    const sid = sessionId || DEFAULT_SESSION;
 
-    if (agentStates[agentKey]) {
+    // default 세션이면 기존 agentStates(하위호환 뷰)를 직접 갱신,
+    // 나머지 세션은 getOrCreateSessionRole로 독립 상태 확보
+    const sessionRoles = sid === DEFAULT_SESSION
+        ? sessions[DEFAULT_SESSION]
+        : (sessions[sid] || (sessions[sid] = createSessionRoles(sid)));
+
+    if (!sessionRoles[agentKey] && !ROLE_NAMES.includes(agentKey)) {
+        // 알 수 없는 역할은 무시 (하위호환: ok: true 유지)
+        res.json({ ok: true });
+        return;
+    }
+
+    if (sessionRoles[agentKey]) {
         const mapped = toolToAction(tool);
-        agentStates[agentKey] = {
-            ...agentStates[agentKey],
+        sessionRoles[agentKey] = {
+            ...sessionRoles[agentKey],
             status: status || 'working',
             action: mapped.action,
             detail: detail || mapped.label,
             tool: tool,
             params: params || {},
             event: event || '',
-            sessionId: sessionId || '',
+            sessionId: sid,
+            roleName: agentKey,
             result: result || '',
             lastUpdate: Date.now()
         };
+
+        // default 세션인 경우 agentStates 참조도 동기화
+        if (sid === DEFAULT_SESSION) {
+            sessions[DEFAULT_SESSION][agentKey] = sessionRoles[agentKey];
+        }
+
+        // 이벤트 카운터 갱신 — P4-B
+        eventCount++;
+        lastEventAt = new Date().toISOString();
 
         // 활동 로그에 추가 (PostToolUse 또는 단순 PreToolUse 모두 기록)
         const activityEntry = {
             ts: Date.now(),
             agent: agentKey,
-            role: agentStates[agentKey].role,
+            role: sessionRoles[agentKey].role,
             tool,
             event: event || '',
             detail: detail || mapped.label,
             params: params || {},
-            result: result || ''
+            result: result || '',
+            sessionId: sid
         };
         pushActivity(activityEntry);
 
-        // 모든 클라이언트에 브로드캐스트
+        // 모든 클라이언트에 브로드캐스트 — sessionId 포함 (P2-C)
         const message = JSON.stringify({
             type: 'agent-update',
             agent: agentKey,
-            state: agentStates[agentKey],
+            sessionId: sid,
+            state: sessionRoles[agentKey],
             activity: activityEntry
         });
 
-        logger.info({ event: 'hook_received', tool, role, sessionId, status }, 'Hook received');
+        logger.info({ event: 'hook_received', tool, role, sessionId: sid, status }, 'Hook received');
 
         clients.forEach(ws => {
             if (ws.readyState === 1) ws.send(message);
         });
-        logger.debug({ event: 'broadcast', clientCount: wss.clients.size, role }, 'Broadcast sent');
+        logger.debug({ event: 'broadcast', clientCount: wss.clients.size, role, sessionId: sid }, 'Broadcast sent');
     }
 
     res.json({ ok: true });
 });
 
 // 에이전트 idle 전환 (완료 시)
-app.post('/hook/tool-done', (req, res) => {
+// P2-C: sessionId 포함 시 해당 세션의 역할만 idle 전환. 미포함 시 'default' 폴백 (하위호환).
+// P4-B: requireLoopback — 루프백 외 주소에서 온 요청은 403 반환.
+app.post('/hook/tool-done', requireLoopback, (req, res) => {
     const { role, allRoles, sessionId } = req.body;
+    const sid = sessionId || DEFAULT_SESSION;
     const targetKeys = allRoles
         ? ROLE_NAMES
         : [(role || 'developer').toLowerCase()];
 
-    logger.info({ event: 'tool_done', role, sessionId, ts: Date.now() }, 'tool-done');
+    logger.info({ event: 'tool_done', role, sessionId: sid, ts: Date.now() }, 'tool-done');
 
-    targetKeys.forEach(agentKey => {
-        if (!agentStates[agentKey]) return;
-        agentStates[agentKey] = {
-            ...agentStates[agentKey],
-            status: 'idle',
-            action: 'idle',
-            detail: '대기 중',
-            lastUpdate: Date.now()
-        };
+    // 대상 세션 결정: allRoles=true 이면 모든 세션의 해당 역할을 idle로 전환
+    const targetSessions = allRoles ? Object.keys(sessions) : [sid];
 
-        const message = JSON.stringify({
-            type: 'agent-update',
-            agent: agentKey,
-            state: agentStates[agentKey]
-        });
+    targetSessions.forEach(targetSid => {
+        const sessionRoles = sessions[targetSid];
+        if (!sessionRoles) return;
 
-        clients.forEach(ws => {
-            if (ws.readyState === 1) ws.send(message);
+        targetKeys.forEach(agentKey => {
+            if (!sessionRoles[agentKey]) return;
+            sessionRoles[agentKey] = {
+                ...sessionRoles[agentKey],
+                status: 'idle',
+                action: 'idle',
+                detail: '대기 중',
+                lastUpdate: Date.now()
+            };
+
+            const message = JSON.stringify({
+                type: 'agent-update',
+                agent: agentKey,
+                sessionId: targetSid,
+                state: sessionRoles[agentKey]
+            });
+
+            clients.forEach(ws => {
+                if (ws.readyState === 1) ws.send(message);
+            });
         });
     });
 
@@ -174,13 +288,26 @@ app.post('/hook/tool-done', (req, res) => {
 // 역할 목록 조회 (SSoT 제공) — P1-A: { roles: ROLES } 형태로 반환
 app.get('/api/roles', (req, res) => res.json({ roles: ROLES }));
 
-// 상태 조회
+// 상태 조회 — P4-B 보강: uptime·connectedClients·eventCount·lastEventAt 포함
+// 응답 구조:
+//   { status, uptime, connectedClients, eventCount, lastEventAt,
+//     agentStates,                              // default 세션 역할 상태 (하위호환)
+//     sessions }                               // 전체 세션별 상태 (P2-C)
 app.get('/api/status', (req, res) => {
-    res.json(agentStates);
+    res.json({
+        status: 'ok',
+        uptime: (Date.now() - SERVER_START) / 1000,
+        connectedClients: wss.clients.size,
+        eventCount,
+        lastEventAt,
+        agentStates,
+        sessions
+    });
 });
 
 // 데모 이벤트 (테스트용)
-app.post('/demo', (req, res) => {
+// P4-B: requireLoopback — 루프백 외 주소에서 온 요청은 403 반환.
+app.post('/demo', requireLoopback, (req, res) => {
     const roles = ['developer', 'devops', 'qa'];
     const tools = ['Read', 'Edit', 'Bash', 'Grep', 'Write'];
     const role = roles[Math.floor(Math.random() * roles.length)];
@@ -234,4 +361,4 @@ if (process.argv[1] === __filename) {
     });
 }
 
-export { app, server, agentStates, activityLog, toolToAction, inferRole, pushActivity, ACTIVITY_LIMIT };
+export { app, server, agentStates, sessions, DEFAULT_SESSION, createSessionRoles, activityLog, toolToAction, inferRole, pushActivity, ACTIVITY_LIMIT };
