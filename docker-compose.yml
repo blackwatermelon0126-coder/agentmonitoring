@@ -26,4 +26,8 @@ services:
     # 컨테이너 내부 NODE_ENV — 운영 모드
     environment:
       - NODE_ENV=production
-    # 향후 로그 영속화 필요 시 volumes 추가
+    volumes:
+      - activity_data:/app/data
+
+volumes:
+  activity_data:
