@@ -3,8 +3,9 @@
 // 귀여운 픽셀 에이전트 + 사무실 모니터링
 // ============================================
 
-// 역할 색상은 shared/roles.js SSoT와 동기화 (P1-B 정합)
-const AGENT_INFO = {
+// 역할 색상은 server/shared/roles.js SSoT와 동기화 (P1-B 정합)
+// 기본값: /api/roles fetch 실패 시 폴백으로 사용
+const AGENT_INFO_DEFAULT = {
     developer: { color: '#4A90D9', skinColor: '#FFD5B8', hairColor: '#5D4037', label: 'DEV', icon: '{ }' },
     devops:    { color: '#E67E22', skinColor: '#F5CBA7', hairColor: '#212121', label: 'OPS', icon: '> _' },
     qa:        { color: '#27AE60', skinColor: '#FDEBD0', hairColor: '#6D4C41', label: 'QA',  icon: '?!' },
@@ -12,13 +13,75 @@ const AGENT_INFO = {
     leader:    { color: '#E74C3C', skinColor: '#FFCCBC', hairColor: '#1B1B1B', label: 'LEAD', icon: '*' }
 };
 
-const DESK_POSITIONS = {
+// 역할 아이콘 (역할 id → 아이콘 문자열)
+const ROLE_ICONS = {
+    developer: '{ }',
+    devops:    '> _',
+    qa:        '?!',
+    pm:        '#',
+    leader:    '*'
+};
+
+// 역할 피부/머리 색상 팔레트 (역할 id → 픽셀 아트 색상)
+const ROLE_SKIN_PALETTE = {
+    developer: { skinColor: '#FFD5B8', hairColor: '#5D4037' },
+    devops:    { skinColor: '#F5CBA7', hairColor: '#212121' },
+    qa:        { skinColor: '#FDEBD0', hairColor: '#6D4C41' },
+    pm:        { skinColor: '#FFE0B2', hairColor: '#3E2723' },
+    leader:    { skinColor: '#FFCCBC', hairColor: '#1B1B1B' }
+};
+
+// AGENT_INFO·DESK_POSITIONS: /api/roles fetch 후 동적으로 구성됨 (아래 initRoles 참조)
+let AGENT_INFO = { ...AGENT_INFO_DEFAULT };
+
+// 책상 위치: 역할 수에 따라 동적 배치
+const DESK_LAYOUT = [
+    { x: 130, y: 300 }, { x: 320, y: 300 }, { x: 510, y: 300 },
+    { x: 200, y: 440 }, { x: 420, y: 440 }
+];
+
+let DESK_POSITIONS = {
     developer: { x: 130, y: 300 },
     devops:    { x: 320, y: 300 },
     qa:        { x: 510, y: 300 },
     pm:        { x: 200, y: 440 },
     leader:    { x: 420, y: 440 }
 };
+
+// /api/roles 에서 역할 목록을 fetch하여 AGENT_INFO·DESK_POSITIONS 갱신
+// 실패 시 기본값 유지 (오프라인 대응)
+async function initRoles() {
+    try {
+        const res = await fetch('/api/roles');
+        if (!res.ok) throw new Error(`/api/roles HTTP ${res.status}`);
+        const { roles } = await res.json();
+        if (!Array.isArray(roles) || roles.length === 0) throw new Error('roles 배열 비어있음');
+
+        // AGENT_INFO 재구성
+        AGENT_INFO = {};
+        roles.forEach(r => {
+            const palette = ROLE_SKIN_PALETTE[r.id] || { skinColor: '#FFD5B8', hairColor: '#5D4037' };
+            const label = r.label ? r.label.slice(0, 4).toUpperCase() : r.id.slice(0, 4).toUpperCase();
+            AGENT_INFO[r.id] = {
+                color:     r.color || '#888888',
+                skinColor: palette.skinColor,
+                hairColor: palette.hairColor,
+                label,
+                icon: ROLE_ICONS[r.id] || '?'
+            };
+        });
+
+        // DESK_POSITIONS 재구성 (순서대로 배치)
+        DESK_POSITIONS = {};
+        roles.forEach((r, i) => {
+            DESK_POSITIONS[r.id] = DESK_LAYOUT[i] || { x: 100 + i * 140, y: 300 };
+        });
+
+        console.log('[2D] /api/roles 로드 완료:', Object.keys(AGENT_INFO).join(', '));
+    } catch (e) {
+        console.warn('[2D] /api/roles fetch 실패, 기본값 사용:', e.message);
+    }
+}
 
 // 픽셀 캐릭터 텍스처 생성 (Canvas 기반)
 function createCharacterTexture(scene, key, info, size = 3) {
@@ -506,7 +569,9 @@ class OfficeScene extends Phaser.Scene {
     }
 
     connectWebSocket() {
-        const wsUrl = `ws://${window.location.hostname}:3300`;
+        // location.host = hostname:port (포트 포함). wss = HTTPS 환경 대응
+        const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+        const wsUrl = `${wsProto}://${location.host}`;
         this.ws = new WebSocket(wsUrl);
 
         this.ws.onopen = () => {
@@ -538,14 +603,18 @@ class OfficeScene extends Phaser.Scene {
     }
 }
 
-const config = {
-    type: Phaser.AUTO,
-    width: 800,
-    height: 600,
-    parent: 'game-container',
-    backgroundColor: '#2a2e5a',
-    scene: [OfficeScene],
-    pixelArt: true
-};
+// /api/roles fetch 후 Phaser 게임을 초기화한다.
+// 역할 목록이 확정된 상태에서 create()가 실행되므로 AGENT_INFO·DESK_POSITIONS가 올바르게 반영된다.
+initRoles().then(() => {
+    const config = {
+        type: Phaser.AUTO,
+        width: 800,
+        height: 600,
+        parent: 'game-container',
+        backgroundColor: '#2a2e5a',
+        scene: [OfficeScene],
+        pixelArt: true
+    };
 
-const game = new Phaser.Game(config);
+    new Phaser.Game(config);
+});
