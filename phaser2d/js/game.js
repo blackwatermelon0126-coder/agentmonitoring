@@ -3,12 +3,13 @@
 // 귀여운 픽셀 에이전트 + 사무실 모니터링
 // ============================================
 
+// 역할 색상은 shared/roles.js SSoT와 동기화 (P1-B 정합)
 const AGENT_INFO = {
-    developer: { color: '#4CAF50', skinColor: '#FFD5B8', hairColor: '#5D4037', label: 'DEV', icon: '{ }' },
-    devops:    { color: '#FF9800', skinColor: '#F5CBA7', hairColor: '#212121', label: 'OPS', icon: '> _' },
-    qa:        { color: '#2196F3', skinColor: '#FDEBD0', hairColor: '#6D4C41', label: 'QA',  icon: '?!' },
-    pm:        { color: '#9C27B0', skinColor: '#FFE0B2', hairColor: '#3E2723', label: 'PM',  icon: '#' },
-    leader:    { color: '#F44336', skinColor: '#FFCCBC', hairColor: '#1B1B1B', label: 'LEAD', icon: '*' }
+    developer: { color: '#4A90D9', skinColor: '#FFD5B8', hairColor: '#5D4037', label: 'DEV', icon: '{ }' },
+    devops:    { color: '#E67E22', skinColor: '#F5CBA7', hairColor: '#212121', label: 'OPS', icon: '> _' },
+    qa:        { color: '#27AE60', skinColor: '#FDEBD0', hairColor: '#6D4C41', label: 'QA',  icon: '?!' },
+    pm:        { color: '#8E44AD', skinColor: '#FFE0B2', hairColor: '#3E2723', label: 'PM',  icon: '#' },
+    leader:    { color: '#E74C3C', skinColor: '#FFCCBC', hairColor: '#1B1B1B', label: 'LEAD', icon: '*' }
 };
 
 const DESK_POSITIONS = {
@@ -223,7 +224,7 @@ class OfficeScene extends Phaser.Scene {
         }).setOrigin(0.5);
 
         this.input.keyboard.on('keydown-SPACE', () => {
-            fetch('http://localhost:3300/demo', { method: 'POST' }).catch(() => {});
+            fetch(`${location.origin}/demo`, { method: 'POST' }).catch(() => {});
         });
 
         // 시계 업데이트
