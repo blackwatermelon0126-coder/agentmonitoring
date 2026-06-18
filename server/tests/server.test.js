@@ -135,20 +135,22 @@ describe('activityLog 링버퍼', () => {
 // 4. GET /api/roles — 5역할 JSON 반환
 // ──────────────────────────────────────────────────────────────
 describe('GET /api/roles', () => {
-    it('200 OK + JSON 배열 반환', async () => {
+    it('200 OK + { roles: [...] } 형태 반환', async () => {
         const res = await request(app).get('/api/roles');
         expect(res.status).toBe(200);
-        expect(Array.isArray(res.body)).toBe(true);
+        // 서버는 { roles: ROLES } 형태로 반환 (프론트엔드 destructuring 호환)
+        expect(res.body).toHaveProperty('roles');
+        expect(Array.isArray(res.body.roles)).toBe(true);
     });
 
     it('정확히 5개 역할 반환', async () => {
         const res = await request(app).get('/api/roles');
-        expect(res.body.length).toBe(5);
+        expect(res.body.roles.length).toBe(5);
     });
 
     it('필수 역할(developer, devops, qa, pm, leader) 포함', async () => {
         const res = await request(app).get('/api/roles');
-        const names = res.body.map(r => r.name);
+        const names = res.body.roles.map(r => r.name);
         expect(names).toContain('developer');
         expect(names).toContain('devops');
         expect(names).toContain('qa');
@@ -158,7 +160,7 @@ describe('GET /api/roles', () => {
 
     it('각 역할은 name, label, color, emoji 필드를 가짐', async () => {
         const res = await request(app).get('/api/roles');
-        res.body.forEach(role => {
+        res.body.roles.forEach(role => {
             expect(role).toHaveProperty('name');
             expect(role).toHaveProperty('label');
             expect(role).toHaveProperty('color');
