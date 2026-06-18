@@ -136,10 +136,12 @@ app.post('/hook/tool-use', (req, res) => {
 
 // 에이전트 idle 전환 (완료 시)
 app.post('/hook/tool-done', (req, res) => {
-    const { role, allRoles } = req.body;
+    const { role, allRoles, sessionId } = req.body;
     const targetKeys = allRoles
         ? ROLE_NAMES
         : [(role || 'developer').toLowerCase()];
+
+    logger.info({ event: 'tool_done', role, sessionId, ts: Date.now() }, 'tool-done');
 
     targetKeys.forEach(agentKey => {
         if (!agentStates[agentKey]) return;
