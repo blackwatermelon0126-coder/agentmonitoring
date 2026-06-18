@@ -1,0 +1,29 @@
+# Agent Monitor — 상시 가동 (Docker Desktop)
+# 기동: docker compose up -d --build
+# 중지: docker compose down
+# 로그: docker compose logs -f
+#
+# restart: unless-stopped → 컨테이너 비정상 종료/Docker Desktop 재시작 시 자동 복구.
+# 단, Docker Desktop 자체가 종료되면 컨테이너도 멈춤. Windows 부팅 시 자동 기동을 원하면
+# Docker Desktop 설정 → "Start Docker Desktop when you sign in to your computer" 체크.
+
+services:
+  agent-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent-monitor:local
+    container_name: agent-monitor
+    ports:
+      - "127.0.0.1:3300:3300"   # 호스트 루프백만 노출 (외부 차단)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3300/api/status"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    # 컨테이너 내부 NODE_ENV — 운영 모드
+    environment:
+      - NODE_ENV=production
+    # 향후 로그 영속화 필요 시 volumes 추가

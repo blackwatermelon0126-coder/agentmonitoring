@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>FLLABS - Agent Monitor</title>
+    <style>
+        * { margin: 0; padding: 0; }
+        body { background: #87CEEB; overflow: hidden; }
+        canvas { display: block; }
+        #info {
+            position: absolute; top: 10px; left: 50%;
+            transform: translateX(-50%);
+            color: #fff; font-family: monospace; font-size: 14px;
+            background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 8px;
+            backdrop-filter: blur(4px);
+        }
+        #status-panel {
+            position: absolute; bottom: 10px; left: 10px;
+            color: #fff; font-family: monospace; font-size: 11px;
+            background: rgba(0,0,0,0.6); padding: 12px; border-radius: 8px;
+            min-width: 280px; backdrop-filter: blur(4px);
+        }
+        #activity-feed {
+            position: absolute; top: 130px; right: 10px;
+            width: 360px; max-height: calc(100vh - 150px);
+            color: #fff; font-family: monospace; font-size: 11px;
+            background: rgba(0,0,0,0.6); padding: 10px 12px; border-radius: 8px;
+            backdrop-filter: blur(4px);
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        #activity-feed .feed-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid #333;
+        }
+        #activity-feed .feed-list {
+            overflow-y: auto; flex: 1; min-height: 200px;
+            scrollbar-width: thin; scrollbar-color: #444 transparent;
+        }
+        #activity-feed .feed-list::-webkit-scrollbar { width: 6px; }
+        #activity-feed .feed-list::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+        .activity-card {
+            border-left: 3px solid #666; padding: 6px 8px; margin-bottom: 6px;
+            background: rgba(255,255,255,0.04); border-radius: 4px;
+            animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
+        .activity-card .ac-head {
+            display: flex; justify-content: space-between; gap: 8px; margin-bottom: 2px;
+        }
+        .activity-card .ac-role { font-weight: bold; font-size: 10px; }
+        .activity-card .ac-time { color: #888; font-size: 10px; }
+        .activity-card .ac-detail { color: #ddd; word-break: break-all; }
+        .activity-card .ac-meta { color: #888; font-size: 10px; margin-top: 2px; word-break: break-all; }
+        .activity-card.role-developer { border-left-color: #4CAF50; }
+        .activity-card.role-devops    { border-left-color: #FF9800; }
+        .activity-card.role-qa        { border-left-color: #2196F3; }
+        .activity-card.role-pm        { border-left-color: #9C27B0; }
+        .activity-card.role-leader    { border-left-color: #F44336; }
+        .agent-detail { color: #aaa; font-size: 10px; margin-left: 16px; word-break: break-all; }
+        #people-panel {
+            position: absolute; top: 10px; right: 10px;
+            color: #fff; font-family: monospace; font-size: 12px;
+            background: rgba(0,0,0,0.6); padding: 10px 14px; border-radius: 8px;
+            backdrop-filter: blur(4px);
+        }
+        .agent-row { margin: 4px 0; display: flex; align-items: center; gap: 8px; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        .dot.idle { background: #666; }
+        .dot.working { background: #0f0; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .section-label { color: #888; font-size: 10px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px; }
+    </style>
+</head>
+<body>
+    <div id="info">FLLABS · Agent Monitor</div>
+
+    <div id="people-panel">
+        <div class="section-label">Office Status</div>
+        <div>Working: <span id="people-count" style="color:#0f0">0/0</span></div>
+        <div>Status: <span id="conn-status" style="color:#ff0">Connecting...</span></div>
+        <div style="margin-top:6px; padding-top:6px; border-top:1px solid #333">
+            <div><span id="time-of-day">—</span></div>
+            <div><span id="weather">—</span></div>
+        </div>
+        <div style="margin-top:6px; padding-top:6px; border-top:1px solid #333; color:#aaa; font-size:10px;">
+            <div style="color:#FFD600; margin-bottom:3px;" id="view-hint">📷 카메라</div>
+            <div><b style="color:#fff">1</b> 전체 &nbsp; <b style="color:#fff">2</b> 오피스 &nbsp; <b style="color:#fff">3</b> 공장위</div>
+            <div><b style="color:#fff">4</b> 공장정면 &nbsp; <b style="color:#fff">5</b> 2층사무실 &nbsp; <b style="color:#fff">6</b> 수영장</div>
+            <div><b style="color:#fff">7</b> 물류창고 &nbsp; <b style="color:#fff">R</b> 리셋</div>
+            <div style="margin-top:3px; color:#777;">좌클릭 회전 · 우클릭/Shift 이동 · 휠 줌 · 화살표 이동</div>
+            <div style="color:#777;">SPACE: demo</div>
+        </div>
+    </div>
+
+    <div id="status-panel">
+        <div class="section-label">Agent Activity</div>
+        <div class="agent-row"><span class="dot idle" id="dot-developer"></span><span style="color:#4CAF50">DEV</span> <span id="txt-developer">idle</span></div>
+        <div class="agent-detail" id="meta-developer"></div>
+        <div class="agent-row"><span class="dot idle" id="dot-devops"></span><span style="color:#FF9800">OPS</span> <span id="txt-devops">idle</span></div>
+        <div class="agent-detail" id="meta-devops"></div>
+        <div class="agent-row"><span class="dot idle" id="dot-qa"></span><span style="color:#2196F3">QA</span> <span id="txt-qa">idle</span></div>
+        <div class="agent-detail" id="meta-qa"></div>
+        <div class="agent-row"><span class="dot idle" id="dot-pm"></span><span style="color:#9C27B0">PM</span> <span id="txt-pm">idle</span></div>
+        <div class="agent-detail" id="meta-pm"></div>
+        <div class="agent-row"><span class="dot idle" id="dot-designer"></span><span style="color:#E91E63">DES</span> <span id="txt-designer">idle</span></div>
+        <div class="agent-detail" id="meta-designer"></div>
+        <div class="agent-row"><span class="dot idle" id="dot-marketer"></span><span style="color:#00BCD4">MKT</span> <span id="txt-marketer">idle</span></div>
+        <div class="agent-detail" id="meta-marketer"></div>
+        <div class="agent-row"><span class="dot idle" id="dot-leader"></span><span style="color:#F44336">LEAD</span> <span id="txt-leader">idle</span></div>
+        <div class="agent-detail" id="meta-leader"></div>
+    </div>
+
+    <div id="activity-feed">
+        <div class="feed-header">
+            <span class="section-label" style="margin:0">Activity Feed</span>
+            <span style="color:#666; font-size:10px;" id="feed-count">0</span>
+        </div>
+        <div class="feed-list" id="feed-list"></div>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "/3d/libs/three/build/three.module.js",
+            "three/addons/": "/3d/libs/three/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module" src="js/scene.js"></script>
+</body>
+</html>
