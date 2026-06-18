@@ -10,10 +10,10 @@ COPY server/package*.json   ./server/
 COPY three3d/package*.json  ./three3d/
 
 # server 의존성 (express, ws)
-RUN cd server  && npm ci --omit=dev --no-audit --no-fund || npm install --omit=dev --no-audit --no-fund
+RUN cd server  && npm ci --omit=dev --no-audit --no-fund
 
 # three3d 의존성 (three) — server.js 가 ../three3d/node_modules/three 를 static 으로 노출
-RUN cd three3d && npm ci --omit=dev --no-audit --no-fund || npm install --omit=dev --no-audit --no-fund
+RUN cd three3d && npm ci --omit=dev --no-audit --no-fund
 
 # 소스 복사 (의존성은 이미 위에서 설치됨)
 COPY server/   ./server/
@@ -21,6 +21,10 @@ COPY phaser2d/ ./phaser2d/
 COPY three3d/  ./three3d/
 
 ENV NODE_ENV=production
+
+# 데이터 디렉토리 생성 (activity.jsonl 영속화용 volume 마운트 포인트)
+RUN mkdir -p /app/data
+
 EXPOSE 3300
 
 # 헬스체크 — /api/status 가 200 OK 면 healthy
