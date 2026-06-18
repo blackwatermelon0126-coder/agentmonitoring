@@ -1230,14 +1230,13 @@ function randomTraits() {
 const ENTRANCE_POS = { x: 0, z: 10 };
 const SIT_OFFSET_Y = -0.45; // 의자에 앉을 때 그룹 y 보정
 
+// P1-A: PM 게이트 G3 확정 — 5역할(designer·marketer 제거)
 const AGENT_DEFS = [
-    { role: 'developer', deskIdx: 0, color: 0x4CAF50, name: 'Developer' },
-    { role: 'devops',    deskIdx: 1, color: 0xFF9800, name: 'DevOps' },
-    { role: 'qa',        deskIdx: 2, color: 0x2196F3, name: 'QA' },
-    { role: 'pm',        deskIdx: 3, color: 0x9C27B0, name: 'PM' },
-    { role: 'designer',  deskIdx: 4, color: 0xE91E63, name: 'Designer' },
-    { role: 'marketer',  deskIdx: 5, color: 0x00BCD4, name: 'Marketer' },
-    { role: 'leader',    deskIdx: 6, color: 0xF44336, name: 'Leader' },
+    { role: 'developer', deskIdx: 0, color: 0x4A90D9, name: 'Developer' },
+    { role: 'devops',    deskIdx: 1, color: 0xE67E22, name: 'DevOps' },
+    { role: 'qa',        deskIdx: 2, color: 0x27AE60, name: 'QA' },
+    { role: 'pm',        deskIdx: 3, color: 0x8E44AD, name: 'PM' },
+    { role: 'leader',    deskIdx: 4, color: 0xE74C3C, name: 'Leader' },
 ];
 
 const fixedAgents = {}; // role -> { def, person, desk, phase, walkTime, sit, label, stamina, exp }
@@ -1676,8 +1675,9 @@ function updateAgentState(role, state) {
 
 // ---- 활동 피드 (카드뷰) ----
 const FEED_LIMIT = 30;
-const ROLE_LABEL = { developer: 'DEV', devops: 'OPS', qa: 'QA', pm: 'PM', designer: 'DES', marketer: 'MKT', leader: 'LEAD' };
-const ROLE_COLOR = { developer: '#4CAF50', devops: '#FF9800', qa: '#2196F3', pm: '#9C27B0', designer: '#E91E63', marketer: '#00BCD4', leader: '#F44336' };
+// P1-A: 5역할 SSoT — AGENT_DEFS 색상과 정합
+const ROLE_LABEL = { developer: 'DEV', devops: 'OPS', qa: 'QA', pm: 'PM', leader: 'LEAD' };
+const ROLE_COLOR = { developer: '#4A90D9', devops: '#E67E22', qa: '#27AE60', pm: '#8E44AD', leader: '#E74C3C' };
 
 function fmtTime(ts) {
     const d = new Date(ts);

@@ -2,6 +2,7 @@ const express = require('express');
 const { WebSocketServer } = require('ws');
 const http = require('http');
 const path = require('path');
+const { ROLES, ROLE_NAMES } = require('./shared/roles');
 
 const app = express();
 app.use(express.json());
@@ -26,6 +27,11 @@ function pushActivity(entry) {
     if (activityLog.length > ACTIVITY_LIMIT) activityLog.shift();
 }
 
+// 에이전트 상태 관리 — ROLE_NAMES(SSoT) 기반 초기화
+const agentStates = Object.fromEntries(
+    ROLES.map(r => [r.name, { role: r.label, status: 'idle', action: '', detail: '', lastUpdate: Date.now() }])
+);
+
 wss.on('connection', (ws) => {
     clients.add(ws);
     console.log(`[WS] 클라이언트 연결. 현재: ${clients.size}명`);
@@ -42,17 +48,6 @@ wss.on('connection', (ws) => {
         console.log(`[WS] 클라이언트 해제. 현재: ${clients.size}명`);
     });
 });
-
-// 에이전트 상태 관리
-const agentStates = {
-    developer: { role: 'Developer', status: 'idle', action: '', detail: '', lastUpdate: Date.now() },
-    devops:    { role: 'DevOps',    status: 'idle', action: '', detail: '', lastUpdate: Date.now() },
-    qa:        { role: 'QA',        status: 'idle', action: '', detail: '', lastUpdate: Date.now() },
-    pm:        { role: 'PM',        status: 'idle', action: '', detail: '', lastUpdate: Date.now() },
-    designer:  { role: 'Designer',  status: 'idle', action: '', detail: '', lastUpdate: Date.now() },
-    marketer:  { role: 'Marketer',  status: 'idle', action: '', detail: '', lastUpdate: Date.now() },
-    leader:    { role: 'Leader',    status: 'idle', action: '', detail: '', lastUpdate: Date.now() }
-};
 
 // 도구 → 액션 매핑
 function toolToAction(toolName) {
@@ -124,7 +119,7 @@ app.post('/hook/tool-use', (req, res) => {
 app.post('/hook/tool-done', (req, res) => {
     const { role, allRoles } = req.body;
     const targetKeys = allRoles
-        ? Object.keys(agentStates)
+        ? ROLE_NAMES
         : [(role || 'developer').toLowerCase()];
 
     targetKeys.forEach(agentKey => {
@@ -150,6 +145,9 @@ app.post('/hook/tool-done', (req, res) => {
 
     res.json({ ok: true });
 });
+
+// 역할 목록 조회 (SSoT 제공)
+app.get('/api/roles', (req, res) => res.json(ROLES));
 
 // 상태 조회
 app.get('/api/status', (req, res) => {

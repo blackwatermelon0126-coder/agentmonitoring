@@ -51,11 +51,12 @@
         .activity-card .ac-time { color: #888; font-size: 10px; }
         .activity-card .ac-detail { color: #ddd; word-break: break-all; }
         .activity-card .ac-meta { color: #888; font-size: 10px; margin-top: 2px; word-break: break-all; }
-        .activity-card.role-developer { border-left-color: #4CAF50; }
-        .activity-card.role-devops    { border-left-color: #FF9800; }
-        .activity-card.role-qa        { border-left-color: #2196F3; }
-        .activity-card.role-pm        { border-left-color: #9C27B0; }
-        .activity-card.role-leader    { border-left-color: #F44336; }
+        /* P1-A: 5역할 색상 — shared/roles.js SSoT 정합 */
+        .activity-card.role-developer { border-left-color: #4A90D9; }
+        .activity-card.role-devops    { border-left-color: #E67E22; }
+        .activity-card.role-qa        { border-left-color: #27AE60; }
+        .activity-card.role-pm        { border-left-color: #8E44AD; }
+        .activity-card.role-leader    { border-left-color: #E74C3C; }
         .agent-detail { color: #aaa; font-size: 10px; margin-left: 16px; word-break: break-all; }
         #people-panel {
             position: absolute; top: 10px; right: 10px;
@@ -94,19 +95,16 @@
 
     <div id="status-panel">
         <div class="section-label">Agent Activity</div>
-        <div class="agent-row"><span class="dot idle" id="dot-developer"></span><span style="color:#4CAF50">DEV</span> <span id="txt-developer">idle</span></div>
+        <!-- P1-A: 5역할 — designer·marketer 제거, shared/roles.js SSoT 색상 정합 -->
+        <div class="agent-row"><span class="dot idle" id="dot-developer"></span><span style="color:#4A90D9">DEV</span> <span id="txt-developer">idle</span></div>
         <div class="agent-detail" id="meta-developer"></div>
-        <div class="agent-row"><span class="dot idle" id="dot-devops"></span><span style="color:#FF9800">OPS</span> <span id="txt-devops">idle</span></div>
+        <div class="agent-row"><span class="dot idle" id="dot-devops"></span><span style="color:#E67E22">OPS</span> <span id="txt-devops">idle</span></div>
         <div class="agent-detail" id="meta-devops"></div>
-        <div class="agent-row"><span class="dot idle" id="dot-qa"></span><span style="color:#2196F3">QA</span> <span id="txt-qa">idle</span></div>
+        <div class="agent-row"><span class="dot idle" id="dot-qa"></span><span style="color:#27AE60">QA</span> <span id="txt-qa">idle</span></div>
         <div class="agent-detail" id="meta-qa"></div>
-        <div class="agent-row"><span class="dot idle" id="dot-pm"></span><span style="color:#9C27B0">PM</span> <span id="txt-pm">idle</span></div>
+        <div class="agent-row"><span class="dot idle" id="dot-pm"></span><span style="color:#8E44AD">PM</span> <span id="txt-pm">idle</span></div>
         <div class="agent-detail" id="meta-pm"></div>
-        <div class="agent-row"><span class="dot idle" id="dot-designer"></span><span style="color:#E91E63">DES</span> <span id="txt-designer">idle</span></div>
-        <div class="agent-detail" id="meta-designer"></div>
-        <div class="agent-row"><span class="dot idle" id="dot-marketer"></span><span style="color:#00BCD4">MKT</span> <span id="txt-marketer">idle</span></div>
-        <div class="agent-detail" id="meta-marketer"></div>
-        <div class="agent-row"><span class="dot idle" id="dot-leader"></span><span style="color:#F44336">LEAD</span> <span id="txt-leader">idle</span></div>
+        <div class="agent-row"><span class="dot idle" id="dot-leader"></span><span style="color:#E74C3C">LEAD</span> <span id="txt-leader">idle</span></div>
         <div class="agent-detail" id="meta-leader"></div>
     </div>
 
