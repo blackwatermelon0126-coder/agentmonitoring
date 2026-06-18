@@ -1,9 +1,13 @@
-const express = require('express');
-const { WebSocketServer } = require('ws');
-const http = require('http');
-const path = require('path');
-const pino = require('pino');
-const { ROLES, ROLE_NAMES } = require('./shared/roles');
+import express from 'express';
+import { WebSocketServer } from 'ws';
+import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import pino from 'pino';
+import { ROLES, ROLE_NAMES } from './shared/roles.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
@@ -55,18 +59,27 @@ wss.on('connection', (ws) => {
 // 도구 → 액션 매핑
 function toolToAction(toolName) {
     const map = {
-        'Read':      { action: 'reading',   label: '파일 읽는 중' },
-        'Write':     { action: 'coding',    label: '코드 작성 중' },
-        'Edit':      { action: 'coding',    label: '코드 수정 중' },
-        'Bash':      { action: 'building',  label: '명령 실행 중' },
-        'Grep':      { action: 'searching', label: '검색 중' },
-        'Glob':      { action: 'searching', label: '파일 탐색 중' },
-        'Agent':     { action: 'thinking',  label: '에이전트 호출 중' },
-        'TodoWrite': { action: 'planning',  label: '작업 계획 중' },
-        'WebSearch': { action: 'searching', label: '웹 검색 중' },
-        'WebFetch':  { action: 'reading',   label: '웹 조회 중' }
+        'Read':      { action: 'reading',      label: '파일 읽는 중' },
+        'Write':     { action: 'coding',       label: '코드 작성 중' },
+        'Edit':      { action: 'coding',       label: '코드 수정 중' },
+        'Bash':      { action: 'building',     label: '명령 실행 중' },
+        'Grep':      { action: 'searching',    label: '검색 중' },
+        'Glob':      { action: 'searching',    label: '파일 탐색 중' },
+        'Agent':     { action: 'thinking',     label: '에이전트 호출 중' },
+        'TodoWrite': { action: 'planning',     label: '작업 계획 중' },
+        'WebSearch': { action: 'searching',    label: '웹 검색 중' },
+        'WebFetch':  { action: 'reading',      label: '웹 조회 중' }
     };
     return map[toolName] || { action: 'working', label: toolName };
+}
+
+// 도구 → 역할 추론
+function inferRole(toolName) {
+    if (toolName === 'Bash') return 'devops';
+    if (toolName === 'Grep' || toolName === 'Glob') return 'qa';
+    if (toolName === 'TodoWrite') return 'pm';
+    if (toolName === 'Agent') return 'leader';
+    return 'developer';
 }
 
 // Hook 수신 엔드포인트 (Claude Code → 서버)
@@ -207,6 +220,12 @@ app.post('/demo', (req, res) => {
 });
 
 const PORT = 3300;
-server.listen(PORT, () => {
-    logger.info({ event: 'server_start', port: PORT }, 'Server started');
-});
+
+// 직접 실행 시에만 포트 바인딩 (테스트에서는 바인딩 없이 import 가능)
+if (process.argv[1] === __filename) {
+    server.listen(PORT, () => {
+        logger.info({ event: 'server_start', port: PORT }, 'Server started');
+    });
+}
+
+export { app, server, agentStates, activityLog, toolToAction, inferRole, pushActivity, ACTIVITY_LIMIT };

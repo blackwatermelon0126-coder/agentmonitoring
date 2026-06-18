@@ -9,4 +9,4 @@ const ROLES = [
 
 const ROLE_NAMES = ROLES.map(r => r.name);
 
-module.exports = { ROLES, ROLE_NAMES };
+export { ROLES, ROLE_NAMES };

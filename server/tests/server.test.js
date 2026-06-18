@@ -1,0 +1,314 @@
+/**
+ * server.test.js — WJ_MONITORING-P3-A 단위테스트 (ZTRACE-5 T축)
+ *
+ * 대상: server.js 핵심 함수·엔드포인트
+ * 프레임워크: vitest + supertest
+ */
+import { describe, it, expect, beforeEach } from 'vitest';
+import request from 'supertest';
+import {
+    app,
+    agentStates,
+    activityLog,
+    toolToAction,
+    inferRole,
+    pushActivity,
+    ACTIVITY_LIMIT
+} from '../server.js';
+
+// ──────────────────────────────────────────────────────────────
+// 1. toolToAction — 도구 → 액션 매핑
+// ──────────────────────────────────────────────────────────────
+describe('toolToAction()', () => {
+    it('Read → reading', () => {
+        expect(toolToAction('Read').action).toBe('reading');
+    });
+    it('Write → coding', () => {
+        expect(toolToAction('Write').action).toBe('coding');
+    });
+    it('Edit → coding', () => {
+        expect(toolToAction('Edit').action).toBe('coding');
+    });
+    it('Bash → building', () => {
+        expect(toolToAction('Bash').action).toBe('building');
+    });
+    it('Grep → searching', () => {
+        expect(toolToAction('Grep').action).toBe('searching');
+    });
+    it('Glob → searching', () => {
+        expect(toolToAction('Glob').action).toBe('searching');
+    });
+    it('Agent → thinking', () => {
+        expect(toolToAction('Agent').action).toBe('thinking');
+    });
+    it('TodoWrite → planning', () => {
+        expect(toolToAction('TodoWrite').action).toBe('planning');
+    });
+    it('WebSearch → searching', () => {
+        expect(toolToAction('WebSearch').action).toBe('searching');
+    });
+    it('WebFetch → reading', () => {
+        expect(toolToAction('WebFetch').action).toBe('reading');
+    });
+    it('알 수 없는 도구 → working', () => {
+        expect(toolToAction('UnknownTool').action).toBe('working');
+    });
+    it('빈 문자열 → working', () => {
+        expect(toolToAction('').action).toBe('working');
+    });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 2. inferRole — 도구 → 역할 추론
+// ──────────────────────────────────────────────────────────────
+describe('inferRole()', () => {
+    it('Bash → devops', () => {
+        expect(inferRole('Bash')).toBe('devops');
+    });
+    it('Grep → qa', () => {
+        expect(inferRole('Grep')).toBe('qa');
+    });
+    it('Glob → qa', () => {
+        expect(inferRole('Glob')).toBe('qa');
+    });
+    it('TodoWrite → pm', () => {
+        expect(inferRole('TodoWrite')).toBe('pm');
+    });
+    it('Agent → leader', () => {
+        expect(inferRole('Agent')).toBe('leader');
+    });
+    it('Read → developer (기본값)', () => {
+        expect(inferRole('Read')).toBe('developer');
+    });
+    it('Write → developer (기본값)', () => {
+        expect(inferRole('Write')).toBe('developer');
+    });
+    it('Edit → developer (기본값)', () => {
+        expect(inferRole('Edit')).toBe('developer');
+    });
+    it('알 수 없는 도구 → developer (기본값)', () => {
+        expect(inferRole('SomeTool')).toBe('developer');
+    });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 3. activityLog 링버퍼 — 50건 초과 시 oldest 제거
+// ──────────────────────────────────────────────────────────────
+describe('activityLog 링버퍼', () => {
+    beforeEach(() => {
+        // 테스트 격리: activityLog 비우기
+        activityLog.splice(0, activityLog.length);
+    });
+
+    it('50건 미만일 때 모두 유지', () => {
+        for (let i = 0; i < 30; i++) {
+            pushActivity({ ts: i, agent: 'developer', tool: 'Read', detail: `entry-${i}` });
+        }
+        expect(activityLog.length).toBe(30);
+    });
+
+    it('50건 초과 시 length = 50 유지', () => {
+        for (let i = 0; i < 60; i++) {
+            pushActivity({ ts: i, agent: 'developer', tool: 'Read', detail: `entry-${i}` });
+        }
+        expect(activityLog.length).toBe(50);
+    });
+
+    it('50건 초과 시 oldest 항목(entry-0)이 제거됨', () => {
+        for (let i = 0; i < 55; i++) {
+            pushActivity({ ts: i, agent: 'developer', tool: 'Read', detail: `entry-${i}` });
+        }
+        // entry-0 ~ entry-4 는 제거되고 entry-5 가 첫 항목
+        expect(activityLog[0].detail).toBe('entry-5');
+    });
+
+    it('정확히 ACTIVITY_LIMIT(50)건이면 제거 없음', () => {
+        for (let i = 0; i < ACTIVITY_LIMIT; i++) {
+            pushActivity({ ts: i, agent: 'developer', tool: 'Read', detail: `entry-${i}` });
+        }
+        expect(activityLog.length).toBe(ACTIVITY_LIMIT);
+        expect(activityLog[0].detail).toBe('entry-0');
+    });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 4. GET /api/roles — 5역할 JSON 반환
+// ──────────────────────────────────────────────────────────────
+describe('GET /api/roles', () => {
+    it('200 OK + JSON 배열 반환', async () => {
+        const res = await request(app).get('/api/roles');
+        expect(res.status).toBe(200);
+        expect(Array.isArray(res.body)).toBe(true);
+    });
+
+    it('정확히 5개 역할 반환', async () => {
+        const res = await request(app).get('/api/roles');
+        expect(res.body.length).toBe(5);
+    });
+
+    it('필수 역할(developer, devops, qa, pm, leader) 포함', async () => {
+        const res = await request(app).get('/api/roles');
+        const names = res.body.map(r => r.name);
+        expect(names).toContain('developer');
+        expect(names).toContain('devops');
+        expect(names).toContain('qa');
+        expect(names).toContain('pm');
+        expect(names).toContain('leader');
+    });
+
+    it('각 역할은 name, label, color, emoji 필드를 가짐', async () => {
+        const res = await request(app).get('/api/roles');
+        res.body.forEach(role => {
+            expect(role).toHaveProperty('name');
+            expect(role).toHaveProperty('label');
+            expect(role).toHaveProperty('color');
+            expect(role).toHaveProperty('emoji');
+        });
+    });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 5. GET /api/status — agentStates JSON 반환
+// ──────────────────────────────────────────────────────────────
+describe('GET /api/status', () => {
+    it('200 OK + JSON 객체 반환', async () => {
+        const res = await request(app).get('/api/status');
+        expect(res.status).toBe(200);
+        expect(typeof res.body).toBe('object');
+    });
+
+    it('5개 역할 키 포함', async () => {
+        const res = await request(app).get('/api/status');
+        expect(res.body).toHaveProperty('developer');
+        expect(res.body).toHaveProperty('devops');
+        expect(res.body).toHaveProperty('qa');
+        expect(res.body).toHaveProperty('pm');
+        expect(res.body).toHaveProperty('leader');
+    });
+
+    it('각 역할 상태는 role, status, action, detail 필드를 가짐', async () => {
+        const res = await request(app).get('/api/status');
+        Object.values(res.body).forEach(state => {
+            expect(state).toHaveProperty('role');
+            expect(state).toHaveProperty('status');
+            expect(state).toHaveProperty('action');
+            expect(state).toHaveProperty('detail');
+        });
+    });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 6. POST /hook/tool-use — agentStates 갱신
+// ──────────────────────────────────────────────────────────────
+describe('POST /hook/tool-use', () => {
+    beforeEach(() => {
+        // 테스트 간 상태 격리: developer 상태 초기화
+        agentStates['developer'].status = 'idle';
+        agentStates['developer'].action = '';
+        agentStates['developer'].tool = '';
+        activityLog.splice(0, activityLog.length);
+    });
+
+    it('200 OK + { ok: true } 반환', async () => {
+        const res = await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Read', role: 'developer' });
+        expect(res.status).toBe(200);
+        expect(res.body.ok).toBe(true);
+    });
+
+    it('tool-use 수신 후 agentStates.developer.action 갱신', async () => {
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Edit', role: 'developer', status: 'working' });
+        expect(agentStates['developer'].action).toBe('coding');
+        expect(agentStates['developer'].status).toBe('working');
+    });
+
+    it('tool-use 수신 후 activityLog에 항목 추가', async () => {
+        activityLog.splice(0, activityLog.length);
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Grep', role: 'qa' });
+        expect(activityLog.length).toBeGreaterThan(0);
+        expect(activityLog[activityLog.length - 1].tool).toBe('Grep');
+    });
+
+    it('role 미입력 시 developer 기본값 사용', async () => {
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Bash' });
+        // developer 에 반영되어야 함
+        expect(agentStates['developer'].tool).toBe('Bash');
+    });
+
+    it('알 수 없는 role 은 agentStates 갱신 안 함 (ok: true 반환은 유지)', async () => {
+        const res = await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Read', role: 'unknown_role' });
+        expect(res.status).toBe(200);
+        expect(res.body.ok).toBe(true);
+    });
+
+    it('detail 파라미터가 반영됨', async () => {
+        await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Read', role: 'developer', detail: '커스텀 상세' });
+        expect(agentStates['developer'].detail).toBe('커스텀 상세');
+    });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 7. POST /hook/tool-done — idle 전환 + allRoles 지원
+// ──────────────────────────────────────────────────────────────
+describe('POST /hook/tool-done', () => {
+    beforeEach(() => {
+        // 전체 역할 working 상태로 세팅
+        Object.keys(agentStates).forEach(key => {
+            agentStates[key].status = 'working';
+            agentStates[key].action = 'reading';
+        });
+    });
+
+    it('200 OK + { ok: true } 반환', async () => {
+        const res = await request(app)
+            .post('/hook/tool-done')
+            .send({ role: 'developer' });
+        expect(res.status).toBe(200);
+        expect(res.body.ok).toBe(true);
+    });
+
+    it('단일 role idle 전환', async () => {
+        await request(app)
+            .post('/hook/tool-done')
+            .send({ role: 'developer' });
+        expect(agentStates['developer'].status).toBe('idle');
+        expect(agentStates['developer'].action).toBe('idle');
+    });
+
+    it('allRoles: true — 전체 역할 idle 전환', async () => {
+        await request(app)
+            .post('/hook/tool-done')
+            .send({ allRoles: true });
+        Object.values(agentStates).forEach(state => {
+            expect(state.status).toBe('idle');
+            expect(state.action).toBe('idle');
+        });
+    });
+
+    it('allRoles: true 시 detail = "대기 중"', async () => {
+        await request(app)
+            .post('/hook/tool-done')
+            .send({ allRoles: true });
+        Object.values(agentStates).forEach(state => {
+            expect(state.detail).toBe('대기 중');
+        });
+    });
+
+    it('role 미입력 시 developer 기본값으로 idle 전환', async () => {
+        await request(app)
+            .post('/hook/tool-done')
+            .send({});
+        expect(agentStates['developer'].status).toBe('idle');
+    });
+});
