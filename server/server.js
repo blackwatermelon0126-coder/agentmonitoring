@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import pino from 'pino';
 import { ROLES, ROLE_NAMES } from './shared/roles.js';
+import { loadRecentEntries, appendEntry, ACTIVITY_LIMIT as _ACTIVITY_LIMIT } from './activity-log.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,10 +27,13 @@ const wss = new WebSocketServer({ server });
 const clients = new Set();
 
 // 최근 활동 로그 (카드뷰 피드용, 최대 50개)
-const ACTIVITY_LIMIT = 50;
-const activityLog = [];
+// 서버 시작 시 파일에서 최근 50건을 복원한다 (결함 D11 수정)
+const ACTIVITY_LIMIT = _ACTIVITY_LIMIT;
+const activityLog = loadRecentEntries(ACTIVITY_LIMIT);
 
 function pushActivity(entry) {
+    // 디스크 영속화 (append) — 메모리 링버퍼와 동시 기록
+    appendEntry(entry);
     activityLog.push(entry);
     if (activityLog.length > ACTIVITY_LIMIT) activityLog.shift();
 }
@@ -167,8 +171,8 @@ app.post('/hook/tool-done', (req, res) => {
     res.json({ ok: true });
 });
 
-// 역할 목록 조회 (SSoT 제공)
-app.get('/api/roles', (req, res) => res.json(ROLES));
+// 역할 목록 조회 (SSoT 제공) — P1-A: { roles: ROLES } 형태로 반환
+app.get('/api/roles', (req, res) => res.json({ roles: ROLES }));
 
 // 상태 조회
 app.get('/api/status', (req, res) => {

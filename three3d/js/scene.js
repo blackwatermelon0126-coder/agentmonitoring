@@ -1230,14 +1230,9 @@ function randomTraits() {
 const ENTRANCE_POS = { x: 0, z: 10 };
 const SIT_OFFSET_Y = -0.45; // 의자에 앉을 때 그룹 y 보정
 
-// P1-A: PM 게이트 G3 확정 — 5역할(designer·marketer 제거)
-const AGENT_DEFS = [
-    { role: 'developer', deskIdx: 0, color: 0x4A90D9, name: 'Developer' },
-    { role: 'devops',    deskIdx: 1, color: 0xE67E22, name: 'DevOps' },
-    { role: 'qa',        deskIdx: 2, color: 0x27AE60, name: 'QA' },
-    { role: 'pm',        deskIdx: 3, color: 0x8E44AD, name: 'PM' },
-    { role: 'leader',    deskIdx: 4, color: 0xE74C3C, name: 'Leader' },
-];
+// P1-A: AGENT_DEFS — /api/roles SSoT 기반 동적 초기화 (아래 initFromRolesApi 참조)
+// 렌더 루프는 빈 배열 상태에서도 안전하게 동작; fetch 완료 후 createFixedAgents() 재호출로 채움
+let AGENT_DEFS = [];
 
 const fixedAgents = {}; // role -> { def, person, desk, phase, walkTime, sit, label, stamina, exp }
 
@@ -1424,11 +1419,13 @@ function createPerson(traits) {
 }
 
 function createFixedAgents() {
+    // AGENT_DEFS가 아직 빈 배열이면 /api/roles 응답 대기 중 — 건너뜀
+    if (AGENT_DEFS.length === 0) return;
     AGENT_DEFS.forEach(def => {
         const traits = randomTraits();
         traits.shirtColor = def.color;
         const person = createPerson(traits);
-        
+
         if (def.role === 'leader') {
             person.group.position.set(POOL.x, 0.05, POOL.z);
             person.group.visible = true;
@@ -1452,6 +1449,7 @@ function createFixedAgents() {
         };
     });
 }
+// 첫 호출: AGENT_DEFS 빈 상태 → 건너뜀. initFromRolesApi() 완료 후 재호출됨.
 createFixedAgents();
 
 // ===== envGroup 마무리: 패치 복원 + 시설 전체를 뒤쪽으로 이동 =====
@@ -1675,9 +1673,9 @@ function updateAgentState(role, state) {
 
 // ---- 활동 피드 (카드뷰) ----
 const FEED_LIMIT = 30;
-// P1-A: 5역할 SSoT — AGENT_DEFS 색상과 정합
-const ROLE_LABEL = { developer: 'DEV', devops: 'OPS', qa: 'QA', pm: 'PM', leader: 'LEAD' };
-const ROLE_COLOR = { developer: '#4A90D9', devops: '#E67E22', qa: '#27AE60', pm: '#8E44AD', leader: '#E74C3C' };
+// P1-A: ROLE_LABEL·ROLE_COLOR — /api/roles SSoT 기반 동적 초기화 (아래 initFromRolesApi 참조)
+let ROLE_LABEL = {};
+let ROLE_COLOR = {};
 
 function fmtTime(ts) {
     const d = new Date(ts);
@@ -2097,6 +2095,58 @@ function animate() {
 }
 
 animate();
+
+// ---- /api/roles SSoT 초기화 ----
+// P1-A: AGENT_DEFS·ROLE_LABEL·ROLE_COLOR를 서버 SSoT(/api/roles)에서 동적으로 채운다.
+// CSS 색상(#rrggbb) → Three.js 정수(0xrrggbb) 변환 헬퍼
+function cssColorToHex(css) {
+    return parseInt(css.replace('#', '0x'), 16);
+}
+
+async function initFromRolesApi() {
+    try {
+        const res = await fetch(`http://${location.hostname}:3300/api/roles`);
+        if (!res.ok) throw new Error(`/api/roles HTTP ${res.status}`);
+        const { roles } = await res.json();
+
+        // AGENT_DEFS: 역할 순서 그대로 deskIdx 부여
+        AGENT_DEFS = roles.map((r, idx) => ({
+            role:    r.id || r.name,
+            deskIdx: idx,
+            color:   cssColorToHex(r.color),
+            name:    r.label,
+        }));
+
+        // ROLE_LABEL·ROLE_COLOR: 피드·상태 패널용 매핑
+        ROLE_LABEL = {};
+        ROLE_COLOR = {};
+        roles.forEach(r => {
+            const key = r.id || r.name;
+            // label을 대문자 약어로 축약 (DEVELOPER→DEV, DEVOPS→OPS, LEADER→LEAD, 그 외→그대로)
+            const abbr = ({ developer: 'DEV', devops: 'OPS', leader: 'LEAD' })[key] || r.label.toUpperCase();
+            ROLE_LABEL[key] = abbr;
+            ROLE_COLOR[key] = r.color;
+        });
+
+        // 에이전트 캐릭터 생성 (fetch 완료 후 첫 실제 호출)
+        createFixedAgents();
+    } catch (err) {
+        // 서버 미기동 시 폴백: 하드코딩 5역할로 안전하게 동작
+        console.warn('[scene] /api/roles fetch 실패 — 폴백 사용:', err.message);
+        AGENT_DEFS = [
+            { role: 'developer', deskIdx: 0, color: 0x4A90D9, name: 'Developer' },
+            { role: 'devops',    deskIdx: 1, color: 0xE67E22, name: 'DevOps' },
+            { role: 'qa',        deskIdx: 2, color: 0x27AE60, name: 'QA' },
+            { role: 'pm',        deskIdx: 3, color: 0x8E44AD, name: 'PM' },
+            { role: 'leader',    deskIdx: 4, color: 0xE74C3C, name: 'Leader' },
+        ];
+        ROLE_LABEL = { developer: 'DEV', devops: 'OPS', qa: 'QA', pm: 'PM', leader: 'LEAD' };
+        ROLE_COLOR = { developer: '#4A90D9', devops: '#E67E22', qa: '#27AE60', pm: '#8E44AD', leader: '#E74C3C' };
+        createFixedAgents();
+    }
+}
+
+initFromRolesApi();
 
 // ---- WebSocket ----
 function connectWS() {
