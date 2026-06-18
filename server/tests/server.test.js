@@ -312,3 +312,43 @@ describe('POST /hook/tool-done', () => {
         expect(agentStates['developer'].status).toBe('idle');
     });
 });
+
+// ──────────────────────────────────────────────────────────────
+// 8. GET /2d — 정적 파일 서빙 (index.html 또는 디렉터리)
+// ──────────────────────────────────────────────────────────────
+describe('GET /2d', () => {
+    it('존재하는 경로에 요청 시 5xx 가 아닌 응답 반환 (정적 서빙 마운트 확인)', async () => {
+        const res = await request(app).get('/2d/');
+        // 정적 파일 없으면 404, 있으면 200 — 어느 쪽이든 5xx 아님을 확인
+        expect(res.status).toBeLessThan(500);
+    });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 9. POST /demo — 무작위 에이전트 상태 변경
+// ──────────────────────────────────────────────────────────────
+describe('POST /demo', () => {
+    it('200 OK + { ok: true } 반환', async () => {
+        const res = await request(app).post('/demo').send({});
+        expect(res.status).toBe(200);
+        expect(res.body.ok).toBe(true);
+    });
+
+    it('응답에 role 과 tool 필드 포함', async () => {
+        const res = await request(app).post('/demo').send({});
+        expect(res.body).toHaveProperty('role');
+        expect(res.body).toHaveProperty('tool');
+    });
+
+    it('반환된 role 은 유효한 역할 중 하나', async () => {
+        const validRoles = ['developer', 'devops', 'qa'];
+        const res = await request(app).post('/demo').send({});
+        expect(validRoles).toContain(res.body.role);
+    });
+
+    it('반환된 tool 은 유효한 도구 중 하나', async () => {
+        const validTools = ['Read', 'Edit', 'Bash', 'Grep', 'Write'];
+        const res = await request(app).post('/demo').send({});
+        expect(validTools).toContain(res.body.tool);
+    });
+});
