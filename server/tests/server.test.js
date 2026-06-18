@@ -17,7 +17,9 @@ import {
     toolToAction,
     inferRole,
     pushActivity,
-    ACTIVITY_LIMIT
+    ACTIVITY_LIMIT,
+    requireLoopback,
+    LOOPBACK_ADDRS
 } from '../server.js';
 
 // ──────────────────────────────────────────────────────────────
@@ -174,7 +176,7 @@ describe('GET /api/roles', () => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// 5. GET /api/status — agentStates + sessions JSON 반환 (P2-C 확장)
+// 5. GET /api/status — P4-B 보강: uptime·connectedClients·eventCount·lastEventAt
 // ──────────────────────────────────────────────────────────────
 describe('GET /api/status', () => {
     it('200 OK + JSON 객체 반환', async () => {
@@ -183,25 +185,46 @@ describe('GET /api/status', () => {
         expect(typeof res.body).toBe('object');
     });
 
-    it('agents + sessions 최상위 키 포함 (P2-C 구조)', async () => {
+    it('P4-B 메트릭 필드 포함 — status, uptime, connectedClients, eventCount, lastEventAt', async () => {
         const res = await request(app).get('/api/status');
-        expect(res.body).toHaveProperty('agents');
+        expect(res.body).toHaveProperty('status', 'ok');
+        expect(res.body).toHaveProperty('uptime');
+        expect(res.body).toHaveProperty('connectedClients');
+        expect(res.body).toHaveProperty('eventCount');
+        expect(res.body).toHaveProperty('lastEventAt');
+    });
+
+    it('uptime 은 0 이상 숫자', async () => {
+        const res = await request(app).get('/api/status');
+        expect(typeof res.body.uptime).toBe('number');
+        expect(res.body.uptime).toBeGreaterThanOrEqual(0);
+    });
+
+    it('connectedClients 는 0 이상 정수', async () => {
+        const res = await request(app).get('/api/status');
+        expect(typeof res.body.connectedClients).toBe('number');
+        expect(res.body.connectedClients).toBeGreaterThanOrEqual(0);
+    });
+
+    it('agentStates + sessions 키 포함 (P2-C 구조 유지)', async () => {
+        const res = await request(app).get('/api/status');
+        expect(res.body).toHaveProperty('agentStates');
         expect(res.body).toHaveProperty('sessions');
     });
 
-    it('agents — 5개 역할 키 포함 (하위호환)', async () => {
+    it('agentStates — 5개 역할 키 포함', async () => {
         const res = await request(app).get('/api/status');
-        const { agents } = res.body;
-        expect(agents).toHaveProperty('developer');
-        expect(agents).toHaveProperty('devops');
-        expect(agents).toHaveProperty('qa');
-        expect(agents).toHaveProperty('pm');
-        expect(agents).toHaveProperty('leader');
+        const { agentStates: states } = res.body;
+        expect(states).toHaveProperty('developer');
+        expect(states).toHaveProperty('devops');
+        expect(states).toHaveProperty('qa');
+        expect(states).toHaveProperty('pm');
+        expect(states).toHaveProperty('leader');
     });
 
-    it('agents — 각 역할 상태는 role, status, action, detail 필드를 가짐 (하위호환)', async () => {
+    it('agentStates — 각 역할 상태는 role, status, action, detail 필드를 가짐', async () => {
         const res = await request(app).get('/api/status');
-        Object.values(res.body.agents).forEach(state => {
+        Object.values(res.body.agentStates).forEach(state => {
             expect(state).toHaveProperty('role');
             expect(state).toHaveProperty('status');
             expect(state).toHaveProperty('action');
@@ -222,6 +245,20 @@ describe('GET /api/status', () => {
         expect(defaultSession).toHaveProperty('qa');
         expect(defaultSession).toHaveProperty('pm');
         expect(defaultSession).toHaveProperty('leader');
+    });
+
+    it('eventCount — /hook/tool-use 호출 후 증가', async () => {
+        const before = (await request(app).get('/api/status')).body.eventCount;
+        await request(app).post('/hook/tool-use').send({ tool: 'Read', role: 'developer' });
+        const after = (await request(app).get('/api/status')).body.eventCount;
+        expect(after).toBeGreaterThan(before);
+    });
+
+    it('lastEventAt — /hook/tool-use 호출 후 ISO 타임스탬프로 설정', async () => {
+        await request(app).post('/hook/tool-use').send({ tool: 'Read', role: 'developer' });
+        const res = await request(app).get('/api/status');
+        expect(res.body.lastEventAt).not.toBeNull();
+        expect(() => new Date(res.body.lastEventAt)).not.toThrow();
     });
 });
 
@@ -385,7 +422,64 @@ describe('POST /demo', () => {
 });
 
 // ──────────────────────────────────────────────────────────────
-// 10. sessionId 기반 멀티세션 지원 (P2-C)
+// 10. requireLoopback 미들웨어 — P4-B origin 루프백 검증
+// ──────────────────────────────────────────────────────────────
+describe('requireLoopback 미들웨어 (P4-B)', () => {
+    it('LOOPBACK_ADDRS 에 127.0.0.1, ::1, ::ffff:127.0.0.1 포함', () => {
+        expect(LOOPBACK_ADDRS.has('127.0.0.1')).toBe(true);
+        expect(LOOPBACK_ADDRS.has('::1')).toBe(true);
+        expect(LOOPBACK_ADDRS.has('::ffff:127.0.0.1')).toBe(true);
+    });
+
+    it('supertest (::ffff:127.0.0.1) 에서 /hook/tool-use → 200 OK (루프백 허용)', async () => {
+        const res = await request(app)
+            .post('/hook/tool-use')
+            .send({ tool: 'Read', role: 'developer' });
+        expect(res.status).toBe(200);
+    });
+
+    it('supertest (::ffff:127.0.0.1) 에서 /hook/tool-done → 200 OK (루프백 허용)', async () => {
+        const res = await request(app)
+            .post('/hook/tool-done')
+            .send({ role: 'developer' });
+        expect(res.status).toBe(200);
+    });
+
+    it('supertest (::ffff:127.0.0.1) 에서 /demo → 200 OK (루프백 허용)', async () => {
+        const res = await request(app).post('/demo').send({});
+        expect(res.status).toBe(200);
+    });
+
+    it('ALLOW_REMOTE_HOOKS=true 설정 시 requireLoopback 미들웨어는 next() 호출', () => {
+        const origEnv = process.env.ALLOW_REMOTE_HOOKS;
+        process.env.ALLOW_REMOTE_HOOKS = 'true';
+        let nextCalled = false;
+        const req = { socket: { remoteAddress: '10.0.0.1' } };
+        const res = {};
+        requireLoopback(req, res, () => { nextCalled = true; });
+        expect(nextCalled).toBe(true);
+        process.env.ALLOW_REMOTE_HOOKS = origEnv ?? '';
+    });
+
+    it('비루프백 주소 + ALLOW_REMOTE_HOOKS 미설정 시 requireLoopback은 403 반환', () => {
+        const origEnv = process.env.ALLOW_REMOTE_HOOKS;
+        delete process.env.ALLOW_REMOTE_HOOKS;
+        let statusCode = null;
+        let responseBody = null;
+        const req = { socket: { remoteAddress: '10.0.0.1' } };
+        const res = {
+            status(code) { statusCode = code; return this; },
+            json(body) { responseBody = body; return this; }
+        };
+        requireLoopback(req, res, () => {});
+        expect(statusCode).toBe(403);
+        expect(responseBody.error).toBe('forbidden');
+        if (origEnv !== undefined) process.env.ALLOW_REMOTE_HOOKS = origEnv;
+    });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 11. sessionId 기반 멀티세션 지원 (P2-C)
 // ──────────────────────────────────────────────────────────────
 describe('sessionId 기반 멀티세션 지원 (P2-C)', () => {
     beforeEach(() => {

@@ -361,4 +361,4 @@ if (process.argv[1] === __filename) {
     });
 }
 
-export { app, server, agentStates, sessions, DEFAULT_SESSION, createSessionRoles, activityLog, toolToAction, inferRole, pushActivity, ACTIVITY_LIMIT };
+export { app, server, agentStates, sessions, DEFAULT_SESSION, createSessionRoles, activityLog, toolToAction, inferRole, pushActivity, ACTIVITY_LIMIT, eventCount, lastEventAt, requireLoopback, SERVER_START, LOOPBACK_ADDRS };
