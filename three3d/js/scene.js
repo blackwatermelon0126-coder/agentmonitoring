@@ -2091,6 +2091,7 @@ function animate() {
     });
 
     document.getElementById('people-count').textContent = `${workingCount}/${presentCount}`;
+    updatePersonLabels(); // P5-D: 사람 레이블 위치 갱신
     renderer.render(scene, camera);
 }
 
@@ -2148,6 +2149,196 @@ async function initFromRolesApi() {
 
 initFromRolesApi();
 
+// ---- 사람 아바타 관리 (P5-D) ----
+// id → { group, labelEl, bubbleTimeout }
+const personAvatarMap = new Map();
+
+/**
+ * CSS2D 스타일 HTML 오버레이 레이블을 3D 위치에 붙인다.
+ * Three.js CSS2DRenderer 없이 간단한 div overlay 방식 사용.
+ */
+function makePersonLabel(name, color) {
+    const el = document.createElement('div');
+    el.style.cssText = `
+        position: absolute; pointer-events: none;
+        background: ${color}cc; color: #fff; border-radius: 6px;
+        padding: 2px 6px; font-size: 11px; font-family: monospace;
+        white-space: nowrap; transform: translateX(-50%);
+        border: 1px solid #fff8;
+    `;
+    el.textContent = name;
+    document.body.appendChild(el);
+    return el;
+}
+
+function makeBubbleEl(text) {
+    const el = document.createElement('div');
+    el.style.cssText = `
+        position: absolute; pointer-events: none;
+        background: #ffffffee; color: #222; border-radius: 8px;
+        padding: 4px 8px; font-size: 10px; font-family: monospace;
+        white-space: nowrap; transform: translateX(-50%);
+        border: 1px solid #aaa; max-width: 200px; overflow: hidden;
+        text-overflow: ellipsis;
+    `;
+    el.textContent = text;
+    document.body.appendChild(el);
+    return el;
+}
+
+/**
+ * 3D 월드 좌표 → 화면 픽셀 좌표 변환
+ */
+function worldToScreen(worldPos) {
+    const v = worldPos.clone().project(camera);
+    return {
+        x: (v.x * 0.5 + 0.5) * renderer.domElement.clientWidth,
+        y: (-(v.y * 0.5) + 0.5) * renderer.domElement.clientHeight,
+    };
+}
+
+/**
+ * 사람 아바타 1개 생성 (구체 + 이름 레이블)
+ */
+function createPersonAvatar(person) {
+    const color = parseInt((person.color || '#4A90E2').replace('#', ''), 16);
+    const px = person.position?.x || 0;
+    const pz = person.position?.y || 0; // 2D y → 3D z
+
+    // 구체 캐릭터
+    const geo = new THREE.SphereGeometry(0.4, 16, 12);
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.2 });
+    const sphere = new THREE.Mesh(geo, mat);
+    sphere.castShadow = true;
+
+    // 배지 (읽지 않은 수)
+    const badgeGeo = new THREE.SphereGeometry(0.15, 8, 8);
+    const badgeMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
+    const badge = new THREE.Mesh(badgeGeo, badgeMat);
+    badge.position.set(0.35, 0.55, 0);
+    badge.visible = false;
+
+    const group = new THREE.Group();
+    group.add(sphere);
+    group.add(badge);
+
+    // 오피스 앞 공간에 배치 (3D 좌표: x=-5~5, y=0, z=6~10)
+    const idx = personAvatarMap.size;
+    const targetX = -4 + (idx % 5) * 2;
+    const targetZ = 7 + Math.floor(idx / 5) * 2;
+    group.position.set(targetX, 0.4, targetZ);
+
+    _origSceneAdd(group);
+
+    // HTML 레이블
+    const labelEl = makePersonLabel(person.name, person.color || '#4A90E2');
+
+    personAvatarMap.set(person.id, { group, sphere, badge, labelEl, bubbleEl: null, unreadCount: 0 });
+}
+
+/**
+ * 사람 아바타 목록 동기화 (추가/삭제/수정)
+ */
+function syncPersonAvatars(people) {
+    const newIds = new Set(people.map(p => p.id));
+
+    // 삭제
+    for (const [id, av] of personAvatarMap) {
+        if (!newIds.has(id)) {
+            _origSceneAdd(av.group); // scene에서 제거를 위한 trick
+            scene.remove(av.group);
+            av.labelEl.remove();
+            if (av.bubbleEl) av.bubbleEl.remove();
+            personAvatarMap.delete(id);
+        }
+    }
+
+    // 추가/갱신
+    for (const person of people) {
+        if (!personAvatarMap.has(person.id)) {
+            createPersonAvatar(person);
+        }
+    }
+}
+
+/**
+ * Teams 알림: 아바타 위 말풍선 2초 표시
+ */
+function showTeamsNotification3D(data) {
+    const av = personAvatarMap.get(data.personId);
+    if (!av) return;
+
+    const msg = data.message;
+    const preview = `${msg.senderName}: ${(msg.text || '').slice(0, 30)}`;
+
+    // 기존 말풍선 제거
+    if (av.bubbleEl) { av.bubbleEl.remove(); av.bubbleEl = null; }
+
+    const bel = makeBubbleEl(preview);
+    av.bubbleEl = bel;
+
+    // 배지 표시
+    av.unreadCount = (av.unreadCount || 0) + 1;
+    av.badge.visible = true;
+
+    // 2초 후 말풍선 제거
+    clearTimeout(av.bubbleTimeout);
+    av.bubbleTimeout = setTimeout(() => {
+        if (av.bubbleEl) { av.bubbleEl.remove(); av.bubbleEl = null; }
+    }, 2000);
+}
+
+// 애니메이션 루프에서 레이블 위치 갱신 (animate 함수 내에서 호출됨)
+function updatePersonLabels() {
+    for (const [, av] of personAvatarMap) {
+        const above = av.group.position.clone();
+        above.y += 1.0;
+        const s = worldToScreen(above);
+        av.labelEl.style.left = `${s.x}px`;
+        av.labelEl.style.top  = `${s.y}px`;
+
+        if (av.bubbleEl) {
+            const bubblePos = av.group.position.clone();
+            bubblePos.y += 1.6;
+            const bs = worldToScreen(bubblePos);
+            av.bubbleEl.style.left = `${bs.x}px`;
+            av.bubbleEl.style.top  = `${bs.y}px`;
+        }
+    }
+}
+
+// ---- "+ 사람 추가" HTML 버튼 ----
+(function createAddPersonButton3D() {
+    const btn = document.createElement('button');
+    btn.textContent = '+ 사람 추가';
+    btn.style.cssText = `
+        position: fixed; bottom: 16px; right: 16px; z-index: 100;
+        background: #2ecc71; color: #fff; border: none; border-radius: 8px;
+        padding: 8px 16px; font-size: 13px; font-family: monospace;
+        cursor: pointer; font-weight: bold;
+    `;
+    btn.onmouseover = () => { btn.style.background = '#27ae60'; };
+    btn.onmouseout  = () => { btn.style.background = '#2ecc71'; };
+    btn.onclick = async () => {
+        const name  = prompt('이름을 입력하세요:');
+        if (!name) return;
+        const email = prompt('Teams 이메일을 입력하세요:');
+        if (!email) return;
+        const color = prompt('색상 (예: #4A90E2):', '#4A90E2') || '#4A90E2';
+        try {
+            const res = await fetch('http://localhost:3300/api/people', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, email, color, position: { x: 400, y: 350 } }),
+            });
+            if (!res.ok) alert('추가 실패');
+        } catch (e) {
+            alert('서버 오류: ' + e.message);
+        }
+    };
+    document.body.appendChild(btn);
+})();
+
 // ---- WebSocket ----
 function connectWS() {
     const ws = new WebSocket(`ws://${location.hostname}:3300`);
@@ -2160,11 +2351,21 @@ function connectWS() {
         } else if (d.type === 'agent-update') {
             updateAgentState(d.agent, d.state);
             if (d.activity) pushActivityCard(d.activity);
+        } else if (d.type === 'people-update') {
+            syncPersonAvatars(d.people);
+        } else if (d.type === 'teams-notification') {
+            showTeamsNotification3D(d);
         }
     };
     ws.onclose = () => { document.getElementById('conn-status').textContent = 'Reconnecting...'; document.getElementById('conn-status').style.color = '#f00'; setTimeout(connectWS, 3000); };
 }
 connectWS();
+
+// 초기 사람 목록 fetch
+fetch('http://localhost:3300/api/people')
+    .then(r => r.json())
+    .then(people => syncPersonAvatars(people))
+    .catch(() => {});
 
 // 디버그/툴 접근용 — CDP에서 카메라 조작 시 사용
 window.__camera = camera;

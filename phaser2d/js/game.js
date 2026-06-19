@@ -243,6 +243,9 @@ class OfficeScene extends Phaser.Scene {
         this.actionBubbles = {};
         this.screens = {};
         this.ws = null;
+        // P5-D: 사람 아바타 관리 맵
+        this.personAvatars = new Map(); // id → { container, bubbleText, bubbleBg, badgeText, badgeBg, unreadCount }
+        this.personBadges  = new Map(); // id → badge Graphics
     }
 
     create() {
@@ -301,6 +304,10 @@ class OfficeScene extends Phaser.Scene {
 
         // 파티클 느낌의 떠다니는 점
         this.createAmbientParticles();
+
+        // P5-D: 사람 아바타 초기 로드 + 추가 버튼
+        this.loadPeople();
+        this.createAddPersonButton();
     }
 
     createAmbientParticles() {
@@ -587,6 +594,10 @@ class OfficeScene extends Phaser.Scene {
                 });
             } else if (data.type === 'agent-update') {
                 this.updateAgent(data.agent, data.state);
+            } else if (data.type === 'people-update') {
+                this.syncPeople(data.people);
+            } else if (data.type === 'teams-notification') {
+                this.showTeamsNotification(data);
             }
         };
 
@@ -600,6 +611,212 @@ class OfficeScene extends Phaser.Scene {
             this.demoText.setText('Server offline. Run: cd server && npm start');
             this.demoText.setColor('#ff4444');
         };
+    }
+
+    // ── 사람 아바타 (P5-D) ─────────────────────────────────────────
+
+    /**
+     * 서버에서 사람 목록을 fetch하여 초기 렌더링한다.
+     */
+    async loadPeople() {
+        try {
+            const res = await fetch('/api/people');
+            if (!res.ok) return;
+            const people = await res.json();
+            this.syncPeople(people);
+        } catch (e) {
+            console.warn('[2D] /api/people fetch 실패:', e.message);
+        }
+    }
+
+    /**
+     * 사람 아바타 목록을 동기화한다 (추가/수정/삭제).
+     * @param {Array} people
+     */
+    syncPeople(people) {
+        if (!this.personAvatars) this.personAvatars = new Map();
+        if (!this.personBadges) this.personBadges = new Map();
+
+        const newIds = new Set(people.map(p => p.id));
+
+        // 삭제된 사람 제거
+        for (const [id, avatar] of this.personAvatars) {
+            if (!newIds.has(id)) {
+                avatar.container.destroy();
+                this.personAvatars.delete(id);
+                if (this.personBadges.has(id)) {
+                    this.personBadges.get(id).destroy();
+                    this.personBadges.delete(id);
+                }
+            }
+        }
+
+        // 추가/수정
+        for (const person of people) {
+            if (this.personAvatars.has(person.id)) {
+                // 위치 업데이트
+                const av = this.personAvatars.get(person.id);
+                av.container.setPosition(person.position?.x || 400, person.position?.y || 400);
+            } else {
+                this.createPersonAvatar(person);
+            }
+        }
+    }
+
+    /**
+     * 사람 아바타 1개를 생성한다.
+     * @param {object} person
+     */
+    createPersonAvatar(person) {
+        if (!this.personAvatars) this.personAvatars = new Map();
+        if (!this.personBadges)  this.personBadges  = new Map();
+
+        const px = person.position?.x || 400;
+        const py = person.position?.y || 400;
+        const color = parseInt((person.color || '#4A90E2').replace('#', ''), 16);
+        const initial = (person.name || '?')[0].toUpperCase();
+
+        const container = this.add.container(px, py);
+
+        // 원형 배경
+        const circle = this.add.graphics();
+        circle.fillStyle(color, 1);
+        circle.fillCircle(0, 0, 22);
+        circle.lineStyle(2, 0xffffff, 0.8);
+        circle.strokeCircle(0, 0, 22);
+
+        // 이니셜
+        const initText = this.add.text(0, 0, initial, {
+            fontSize: '18px', fontFamily: 'monospace',
+            color: '#ffffff', fontStyle: 'bold',
+        }).setOrigin(0.5);
+
+        // 이름 레이블
+        const nameLabel = this.add.text(0, 30, person.name, {
+            fontSize: '9px', fontFamily: 'monospace',
+            color: '#ffffff', backgroundColor: '#00000066',
+            padding: { x: 4, y: 2 },
+        }).setOrigin(0.5);
+
+        // 말풍선 (초기 숨김)
+        const bubbleBg = this.add.graphics();
+        const bubbleText = this.add.text(0, -52, '', {
+            fontSize: '8px', fontFamily: 'monospace',
+            color: '#222244', backgroundColor: '#ffffffee',
+            padding: { x: 4, y: 3 },
+            wordWrap: { width: 120 },
+        }).setOrigin(0.5).setVisible(false);
+        bubbleBg.setVisible(false);
+
+        // 읽지 않은 수 배지
+        const badgeBg = this.add.graphics();
+        const badgeText = this.add.text(16, -16, '', {
+            fontSize: '8px', fontFamily: 'monospace',
+            color: '#ffffff', fontStyle: 'bold',
+        }).setOrigin(0.5).setVisible(false);
+
+        container.add([circle, initText, nameLabel, bubbleBg, bubbleText, badgeBg, badgeText]);
+        container.setDepth(5);
+
+        // 드래그 가능
+        container.setSize(44, 44);
+        container.setInteractive({ draggable: true });
+
+        this.input.setDraggable(container);
+
+        container.on('drag', (pointer, dragX, dragY) => {
+            container.setPosition(dragX, dragY);
+        });
+
+        container.on('dragend', () => {
+            fetch(`/api/people/${person.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ position: { x: container.x, y: container.y } }),
+            }).catch(() => {});
+        });
+
+        this.personAvatars.set(person.id, {
+            container,
+            bubbleBg,
+            bubbleText,
+            badgeBg,
+            badgeText,
+            unreadCount: 0,
+        });
+    }
+
+    /**
+     * Teams 알림 수신 시 해당 아바타에 말풍선을 3초간 표시한다.
+     * @param {{ personId: string, personName: string, message: object }} data
+     */
+    showTeamsNotification(data) {
+        if (!this.personAvatars) return;
+        const av = this.personAvatars.get(data.personId);
+        if (!av) return;
+
+        const msg = data.message;
+        const preview = `${msg.senderName}: ${(msg.text || '').slice(0, 30)}`;
+
+        // 말풍선 표시
+        av.bubbleText.setText(preview).setVisible(true);
+        av.bubbleBg.setVisible(true);
+        av.container.setAlpha(1);
+
+        // 배지 증가
+        av.unreadCount = (av.unreadCount || 0) + 1;
+        av.badgeBg.clear();
+        av.badgeBg.fillStyle(0xff2222, 1);
+        av.badgeBg.fillCircle(16, -16, 10);
+        av.badgeText.setText(String(av.unreadCount)).setVisible(true);
+
+        // 3초 후 말풍선 페이드아웃
+        this.tweens.add({
+            targets: [av.bubbleText, av.bubbleBg],
+            alpha: 0, duration: 500, delay: 2500,
+            onComplete: () => {
+                av.bubbleText.setVisible(false).setAlpha(1);
+                av.bubbleBg.setVisible(false).setAlpha(1);
+            },
+        });
+    }
+
+    /**
+     * "+ 사람 추가" 버튼을 렌더링한다.
+     */
+    createAddPersonButton() {
+        const btnX = 740, btnY = 560;
+        const btnBg = this.add.graphics();
+        btnBg.fillStyle(0x2ecc71, 0.9);
+        btnBg.fillRoundedRect(btnX - 50, btnY - 12, 100, 24, 8);
+        btnBg.setInteractive(new Phaser.Geom.Rectangle(btnX - 50, btnY - 12, 100, 24), Phaser.Geom.Rectangle.Contains);
+        btnBg.setDepth(20);
+
+        const btnText = this.add.text(btnX, btnY, '+ 사람 추가', {
+            fontSize: '9px', fontFamily: 'monospace', color: '#ffffff', fontStyle: 'bold',
+        }).setOrigin(0.5).setDepth(21);
+
+        btnBg.on('pointerover', () => { btnBg.clear(); btnBg.fillStyle(0x27ae60, 1); btnBg.fillRoundedRect(btnX - 50, btnY - 12, 100, 24, 8); });
+        btnBg.on('pointerout',  () => { btnBg.clear(); btnBg.fillStyle(0x2ecc71, 0.9); btnBg.fillRoundedRect(btnX - 50, btnY - 12, 100, 24, 8); });
+
+        btnBg.on('pointerdown', async () => {
+            const name  = prompt('이름을 입력하세요:');
+            if (!name) return;
+            const email = prompt('Teams 이메일을 입력하세요:');
+            if (!email) return;
+            const color = prompt('색상 (예: #4A90E2):', '#4A90E2') || '#4A90E2';
+
+            try {
+                const res = await fetch('/api/people', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, email, color, position: { x: 400, y: 350 } }),
+                });
+                if (!res.ok) alert('추가 실패');
+            } catch (e) {
+                alert('서버 오류: ' + e.message);
+            }
+        });
     }
 }
 

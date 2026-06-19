@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/private/agentmonitoring/hooks/agent-monitor-hook.js"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/private/agentmonitoring/hooks/agent-monitor-hook.js"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/private/agentmonitoring/hooks/agent-monitor-hook.js"
+          }
+        ]
+      }
+    ]
+  }
+}

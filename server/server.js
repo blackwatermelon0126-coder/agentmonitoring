@@ -6,6 +6,10 @@ import { fileURLToPath } from 'url';
 import pino from 'pino';
 import { ROLES, ROLE_NAMES } from './shared/roles.js';
 import { loadRecentEntries, appendEntry, ACTIVITY_LIMIT as _ACTIVITY_LIMIT } from './activity-log.js';
+import { getDeviceCodeUrl, getAuthStatus } from './auth/msalClient.js';
+import { startPolling } from './teams/teamsPoller.js';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { randomUUID } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -352,13 +356,126 @@ app.post('/demo', requireLoopback, (req, res) => {
     res.json({ ok: true, role, tool });
 });
 
+// ── Auth 라우트 (P5-A: Device Code Flow) ─────────────────────────
+
+/**
+ * GET /auth/start
+ * Device Code Flow를 시작한다.
+ * 반환: { userCode, verificationUri, message }
+ * 클라이언트는 verificationUri에서 userCode를 입력해 인증한다.
+ */
+app.get('/auth/start', async (req, res) => {
+    try {
+        const result = await getDeviceCodeUrl();
+        logger.info({ event: 'auth_start', userCode: result.userCode }, 'Device Code Flow started');
+        res.json({
+            userCode:        result.userCode,
+            verificationUri: result.verificationUri,
+            message:         result.message,
+        });
+    } catch (err) {
+        logger.error({ event: 'auth_start_error', err: err.message }, 'Device Code Flow failed');
+        res.status(500).json({ error: 'auth_failed', reason: err.message });
+    }
+});
+
+/**
+ * GET /auth/status
+ * 현재 인증 상태를 반환한다.
+ * 반환: { authenticated: boolean, account: string|null }
+ */
+app.get('/auth/status', (req, res) => {
+    const status = getAuthStatus();
+    res.json(status);
+});
+
+// ── 사람 아바타 관리 API (P5-B) ──────────────────────────────────
+
+const PEOPLE_PATH = path.join(__dirname, 'data', 'people.json');
+
+// 서버 시작 시 people.json 로드
+function loadPeople() {
+    try {
+        if (!existsSync(PEOPLE_PATH)) return [];
+        return JSON.parse(readFileSync(PEOPLE_PATH, 'utf8'));
+    } catch {
+        return [];
+    }
+}
+
+function savePeople(people) {
+    const dir = path.dirname(PEOPLE_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(PEOPLE_PATH, JSON.stringify(people, null, 2), 'utf8');
+}
+
+function broadcastPeople(people) {
+    const msg = JSON.stringify({ type: 'people-update', people });
+    clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+}
+
+let people = loadPeople();
+
+/** GET /api/people — 사람 목록 반환 */
+app.get('/api/people', (req, res) => {
+    res.json(people);
+});
+
+/** POST /api/people — 사람 추가 */
+app.post('/api/people', (req, res) => {
+    const { name, email, color = '#4A90E2', position = { x: 300, y: 200 } } = req.body;
+    if (!name || !email) {
+        return res.status(400).json({ error: 'name과 email은 필수입니다.' });
+    }
+    const person = {
+        id:          randomUUID(),
+        name,
+        email,
+        color,
+        avatarIndex: people.length,
+        position,
+        teamsStatus: 'idle',
+    };
+    people.push(person);
+    savePeople(people);
+    broadcastPeople(people);
+    logger.info({ event: 'person_added', id: person.id, name }, 'Person added');
+    res.status(201).json(person);
+});
+
+/** PUT /api/people/:id — 사람 정보 수정 */
+app.put('/api/people/:id', (req, res) => {
+    const idx = people.findIndex(p => p.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: '사람을 찾을 수 없습니다.' });
+    people[idx] = { ...people[idx], ...req.body, id: people[idx].id };
+    savePeople(people);
+    broadcastPeople(people);
+    res.json(people[idx]);
+});
+
+/** DELETE /api/people/:id — 사람 삭제 */
+app.delete('/api/people/:id', (req, res) => {
+    const idx = people.findIndex(p => p.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: '사람을 찾을 수 없습니다.' });
+    const removed = people.splice(idx, 1)[0];
+    savePeople(people);
+    broadcastPeople(people);
+    logger.info({ event: 'person_deleted', id: removed.id }, 'Person deleted');
+    res.json({ ok: true });
+});
+
 const PORT = 3300;
 
 // 직접 실행 시에만 포트 바인딩 (테스트에서는 바인딩 없이 import 가능)
 if (process.argv[1] === __filename) {
     server.listen(PORT, () => {
         logger.info({ event: 'server_start', port: PORT }, 'Server started');
+        // P5-C: Teams 폴링 시작 (토큰 없으면 조용히 대기)
+        startPolling({
+            getPeople: () => people,
+            broadcast: (msg) => clients.forEach(ws => { if (ws.readyState === 1) ws.send(JSON.stringify(msg)); }),
+        });
     });
 }
 
-export { app, server, agentStates, sessions, DEFAULT_SESSION, createSessionRoles, activityLog, toolToAction, inferRole, pushActivity, ACTIVITY_LIMIT, eventCount, lastEventAt, requireLoopback, SERVER_START, LOOPBACK_ADDRS };
+export { app, server, agentStates, sessions, DEFAULT_SESSION, createSessionRoles, activityLog, toolToAction, inferRole, pushActivity, ACTIVITY_LIMIT, eventCount, lastEventAt, requireLoopback, SERVER_START, LOOPBACK_ADDRS, people, broadcastPeople };
