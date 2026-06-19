@@ -302,3 +302,80 @@ describe('people-update 브로드캐스트', () => {
         expect(res.status).toBe(200);
     });
 });
+
+// ──────────────────────────────────────────────────────────────
+// 7. P5-D 아바타 드래그 위치 영속화 — PUT position 저장·복원
+//    2D/3D 드래그 종료 시 PUT /api/people/:id 로 좌표를 보내면
+//    person.position에 병합·저장되어 재시작·재접속 후에도 유지된다.
+// ──────────────────────────────────────────────────────────────
+describe('PUT /api/people/:id — position 영속화 (P5-D)', () => {
+    beforeEach(clearPeople);
+
+    it('PUT position 전달 시 좌표가 저장되고 응답에 반영됨 (2D px)', async () => {
+        const created = (await request(app)
+            .post('/api/people')
+            .send({ name: '드래그2D', email: 'drag2d@example.com' })).body;
+        // 기본 position은 { x: 300, y: 200 }
+        expect(created.position).toEqual({ x: 300, y: 200 });
+
+        const res = await request(app)
+            .put(`/api/people/${created.id}`)
+            .send({ position: { x: 555, y: 480 } });
+        expect(res.status).toBe(200);
+        expect(res.body.position).toEqual({ x: 555, y: 480 });
+    });
+
+    it('PUT 후 GET·people 배열에 새 좌표가 유지됨 (재접속/조회 복원)', async () => {
+        const created = (await request(app)
+            .post('/api/people')
+            .send({ name: '드래그유지', email: 'dragkeep@example.com' })).body;
+        await request(app)
+            .put(`/api/people/${created.id}`)
+            .send({ position: { x: 120, y: 640 } });
+
+        // GET (재접속 시 클라이언트가 받는 목록)
+        const list = (await request(app).get('/api/people')).body;
+        expect(list.find(p => p.id === created.id).position).toEqual({ x: 120, y: 640 });
+        // people 배열(영속 대상)에도 동일하게 반영
+        expect(people.find(p => p.id === created.id).position).toEqual({ x: 120, y: 640 });
+    });
+
+    it('position만 PUT해도 name·email 등 다른 필드는 보존됨 (부분 병합)', async () => {
+        const created = (await request(app)
+            .post('/api/people')
+            .send({ name: '보존', email: 'preserve@example.com', color: '#FF5722' })).body;
+        const res = await request(app)
+            .put(`/api/people/${created.id}`)
+            .send({ position: { x: 700, y: 100 } });
+        expect(res.body.name).toBe('보존');
+        expect(res.body.email).toBe('preserve@example.com');
+        expect(res.body.color).toBe('#FF5722');
+        expect(res.body.position).toEqual({ x: 700, y: 100 });
+    });
+
+    it('3D 좌표계 {x,y,z} position도 그대로 저장됨', async () => {
+        const created = (await request(app)
+            .post('/api/people')
+            .send({ name: '드래그3D', email: 'drag3d@example.com' })).body;
+        const res = await request(app)
+            .put(`/api/people/${created.id}`)
+            .send({ position: { x: 410, y: 290, z: 0.4 } });
+        expect(res.status).toBe(200);
+        expect(res.body.position).toEqual({ x: 410, y: 290, z: 0.4 });
+    });
+
+    it('position 누락 PUT 시 기존 좌표가 유지됨 (덮어쓰지 않음)', async () => {
+        const created = (await request(app)
+            .post('/api/people')
+            .send({ name: '좌표유지', email: 'noposchange@example.com' })).body;
+        await request(app)
+            .put(`/api/people/${created.id}`)
+            .send({ position: { x: 250, y: 350 } });
+        // position 없이 name만 갱신
+        const res = await request(app)
+            .put(`/api/people/${created.id}`)
+            .send({ name: '이름만변경' });
+        expect(res.body.name).toBe('이름만변경');
+        expect(res.body.position).toEqual({ x: 250, y: 350 });
+    });
+});

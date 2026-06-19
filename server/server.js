@@ -443,13 +443,22 @@ app.post('/api/people', (req, res) => {
     res.status(201).json(person);
 });
 
-/** PUT /api/people/:id — 사람 정보 수정 */
+/**
+ * PUT /api/people/:id — 사람 정보 수정
+ *
+ * P5-D: 아바타 드래그 위치 영속화.
+ * body.position({x,y} 또는 {x,y,z})을 포함하면 그대로 person에 병합·저장한다.
+ * (스프레드 병합이므로 position이 전달되면 갱신, 누락되면 기존값 유지.)
+ * 저장 후 people.json에 영속화하고 people-update로 전 클라이언트에 전파한다 →
+ * 서버 재시작·재접속 후에도 드래그한 좌표가 유지된다.
+ */
 app.put('/api/people/:id', (req, res) => {
     const idx = people.findIndex(p => p.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: '사람을 찾을 수 없습니다.' });
+    // id는 불변(클라이언트가 id를 보내도 기존 id 유지). position 등 나머지 필드는 병합.
     people[idx] = { ...people[idx], ...req.body, id: people[idx].id };
-    savePeople(people);
-    broadcastPeople(people);
+    savePeople(people);       // people.json 영속화 (재시작 후 복원)
+    broadcastPeople(people);  // 2D/3D 클라이언트에 즉시 반영
     res.json(people[idx]);
 });
 

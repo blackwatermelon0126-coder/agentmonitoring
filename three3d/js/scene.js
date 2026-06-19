@@ -2153,6 +2153,10 @@ initFromRolesApi();
 // id → { group, labelEl, bubbleTimeout }
 const personAvatarMap = new Map();
 
+// P5-D: 현재 드래그 중인 아바타({group,...} 객체). 드래그 중에는 syncPersonAvatars의
+// 위치 덮어쓰기를 막아 사용자가 끄는 손맛을 유지한다.
+let draggingAvatar = null;
+
 /**
  * CSS2D 스타일 HTML 오버레이 레이블을 3D 위치에 붙인다.
  * Three.js CSS2DRenderer 없이 간단한 div overlay 방식 사용.
@@ -2197,6 +2201,30 @@ function worldToScreen(worldPos) {
     };
 }
 
+// P5-D: 2D 캔버스 좌표(px) ↔ 3D 씬 좌표 변환 규약 (단일 진실).
+// 2D 캔버스는 800×600, 중앙(400,300) 기준. 2D x → 3D x, 2D y → 3D z (바닥 평면).
+// createPersonAvatar(읽기)와 3D 드래그 영속화(쓰기)가 동일한 규약을 공유해 왕복 일관성을 보장한다.
+const PERSON_SCALE_3D = 0.02; // 픽셀 → 3D 단위 스케일
+const PERSON_ORIGIN_X = 400;  // 2D 캔버스 중앙 x
+const PERSON_ORIGIN_Y = 300;  // 2D 캔버스 중앙 y
+const PERSON_GROUND_Y = 0.4;  // 아바타 구체 중심 높이(바닥 위)
+
+/** 서버 position {x,y}(2D px) → 3D 씬 좌표 {x,z} */
+function personPosToScene(pos) {
+    return {
+        x: (pos.x - PERSON_ORIGIN_X) * PERSON_SCALE_3D,
+        z: (pos.y - PERSON_ORIGIN_Y) * PERSON_SCALE_3D,
+    };
+}
+
+/** 3D 씬 좌표(sceneX, sceneZ) → 서버 position {x,y}(2D px). personPosToScene의 역변환 */
+function scenePosToPerson(sceneX, sceneZ) {
+    return {
+        x: Math.round(sceneX / PERSON_SCALE_3D + PERSON_ORIGIN_X),
+        y: Math.round(sceneZ / PERSON_SCALE_3D + PERSON_ORIGIN_Y),
+    };
+}
+
 /**
  * 사람 아바타 1개 생성 (구체 + 이름 레이블)
  * person.position {x, y} 가 있으면 3D 씬 위치에 반영한다. (2D y → 3D z 변환)
@@ -2224,18 +2252,19 @@ function createPersonAvatar(person) {
 
     // person.position이 있으면 3D 씬 위치 반영, 없으면 격자 기본 배치
     if (person.position && (person.position.x !== undefined) && (person.position.y !== undefined)) {
-        // 2D 캔버스 좌표(px) → 3D 씬 좌표 변환: 2D y → 3D z
-        const scale3d = 0.02; // 픽셀 → 3D 단위 스케일 (조정 가능)
-        const px = (person.position.x - 400) * scale3d; // 2D 중앙 기준 정규화
-        const pz = (person.position.y - 300) * scale3d; // 2D y → 3D z
-        group.position.set(px, 0.4, pz);
+        // 2D 캔버스 좌표(px) → 3D 씬 좌표 변환: 2D y → 3D z (공유 규약)
+        const s = personPosToScene(person.position);
+        group.position.set(s.x, PERSON_GROUND_Y, s.z);
     } else {
         // 기본 격자 배치 — 오피스 앞 공간 (x=-5~5, z=6~10)
         const idx = personAvatarMap.size;
         const targetX = -4 + (idx % 5) * 2;
         const targetZ = 7 + Math.floor(idx / 5) * 2;
-        group.position.set(targetX, 0.4, targetZ);
+        group.position.set(targetX, PERSON_GROUND_Y, targetZ);
     }
+
+    // 레이캐스트 드래그 식별용: sphere에 personId 부착
+    sphere.userData.personId = person.id;
 
     _origSceneAdd(group);
 
@@ -2246,7 +2275,9 @@ function createPersonAvatar(person) {
 }
 
 /**
- * 사람 아바타 목록 동기화 (추가/삭제/수정)
+ * 사람 아바타 목록 동기화 (추가/삭제/위치 갱신)
+ * P5-D: 기존 아바타도 person.position 변경 시 3D 위치를 갱신한다
+ * (2D 드래그 → 서버 PUT → people-update 브로드캐스트가 3D에 반영되도록).
  */
 function syncPersonAvatars(people) {
     const newIds = new Set(people.map(p => p.id));
@@ -2261,10 +2292,17 @@ function syncPersonAvatars(people) {
         }
     }
 
-    // 추가/갱신
+    // 추가/위치 갱신
     for (const person of people) {
-        if (!personAvatarMap.has(person.id)) {
+        const av = personAvatarMap.get(person.id);
+        if (!av) {
             createPersonAvatar(person);
+        } else if (person.position && (person.position.x !== undefined) && (person.position.y !== undefined)) {
+            // 드래그 중인 아바타가 아니면(또는 다른 클라이언트의 갱신이면) 위치 반영
+            if (av !== draggingAvatar) {
+                const s = personPosToScene(person.position);
+                av.group.position.set(s.x, PERSON_GROUND_Y, s.z);
+            }
         }
     }
 }
@@ -2345,6 +2383,80 @@ function updatePersonLabels() {
         }
     };
     document.body.appendChild(btn);
+})();
+
+// ---- 사람 아바타 드래그 (P5-D) ----
+// 레이캐스트로 아바타 구체를 집어 바닥 평면(y=PERSON_GROUND_Y) 위로 끌고,
+// 드래그 종료 시 새 좌표를 서버에 PUT하여 영속화한다.
+(function setupPersonDrag3D() {
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    // 아바타가 이동하는 바닥 평면 (y = PERSON_GROUND_Y, 위쪽 법선)
+    const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -PERSON_GROUND_Y);
+    const hitPoint = new THREE.Vector3();
+    const dom = renderer.domElement;
+
+    /** 포인터 이벤트 → 정규화 장치 좌표(NDC) */
+    function toNdc(ev) {
+        const rect = dom.getBoundingClientRect();
+        ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+        ndc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+    }
+
+    /** 현재 포인터 광선이 만나는 첫 아바타 구체를 반환 (없으면 null) */
+    function pickAvatarSphere() {
+        const spheres = [];
+        for (const [, av] of personAvatarMap) spheres.push(av.sphere);
+        if (spheres.length === 0) return null;
+        const hits = raycaster.intersectObjects(spheres, false);
+        return hits.length ? hits[0].object : null;
+    }
+
+    dom.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return; // 좌클릭만
+        toNdc(ev);
+        raycaster.setFromCamera(ndc, camera);
+        const sphere = pickAvatarSphere();
+        if (!sphere) return;
+        const id = sphere.userData.personId;
+        const av = personAvatarMap.get(id);
+        if (!av) return;
+        draggingAvatar = av;
+        draggingAvatar.personId = id;
+        controls.enabled = false; // 카메라 회전 잠금 (드래그 중)
+        dom.setPointerCapture?.(ev.pointerId);
+        ev.preventDefault();
+    });
+
+    dom.addEventListener('pointermove', (ev) => {
+        if (!draggingAvatar) return;
+        toNdc(ev);
+        raycaster.setFromCamera(ndc, camera);
+        if (raycaster.ray.intersectPlane(dragPlane, hitPoint)) {
+            // 평면 위 교점으로 아바타 이동 (y는 고정)
+            draggingAvatar.group.position.set(hitPoint.x, PERSON_GROUND_Y, hitPoint.z);
+        }
+    });
+
+    function endDrag(ev) {
+        if (!draggingAvatar) return;
+        const av = draggingAvatar;
+        const id = av.personId;
+        draggingAvatar = null;
+        controls.enabled = true;
+        dom.releasePointerCapture?.(ev.pointerId);
+
+        // 3D 씬 좌표 → 서버 position(2D px) 역변환 후 영속화
+        const pos = scenePosToPerson(av.group.position.x, av.group.position.z);
+        fetch(`http://localhost:3300/api/people/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ position: pos }),
+        }).catch(() => {});
+    }
+
+    dom.addEventListener('pointerup', endDrag);
+    dom.addEventListener('pointercancel', endDrag);
 })();
 
 // ---- WebSocket ----
