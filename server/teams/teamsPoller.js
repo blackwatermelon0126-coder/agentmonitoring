@@ -69,21 +69,51 @@ async function pollOnce({ getPeople, broadcast, accessToken, lastSeen }) {
     const chats = chatsData.value || [];
 
     // 2. people.json email 목록 → 모니터링 대상 채팅 매칭
+    //    Graph Chat API 멤버 객체는 email이 비어있는 경우가 많으므로
+    //    email → userId(aadObjectId) → userPrincipalName 순서로 폴백 매칭한다.
     const peopleList = getPeople();
-    const peopleEmails = new Map(
-        peopleList.map(p => [p.email.toLowerCase(), p])
-    );
+    const peopleEmails  = new Map(peopleList.filter(p => p.email).map(p => [p.email.toLowerCase(), p]));
+    const peopleUserIds = new Map(peopleList.filter(p => p.userId).map(p => [p.userId.toLowerCase(), p]));
+    const peopleUpns    = new Map(peopleList.filter(p => p.userPrincipalName).map(p => [p.userPrincipalName.toLowerCase(), p]));
+
+    /**
+     * Graph 멤버 객체와 people 목록을 email → userId → UPN 순서로 매칭한다.
+     * @param {object} member - Graph aadUserConversationMember 객체
+     * @returns {object|null} 매칭된 person 또는 null
+     */
+    function matchMemberToPerson(member) {
+        const email = (member.email || '').toLowerCase();
+        if (email) {
+            const byEmail = peopleEmails.get(email);
+            if (byEmail) return byEmail;
+        }
+
+        // userId 폴백 (Graph 응답의 userId = aadObjectId)
+        const userId = (member.userId || '').toLowerCase();
+        if (userId) {
+            const byUserId = peopleUserIds.get(userId);
+            if (byUserId) return byUserId;
+        }
+
+        // userPrincipalName 폴백
+        const upn = (member.userPrincipalName || '').toLowerCase();
+        if (upn) {
+            const byUpn = peopleUpns.get(upn);
+            if (byUpn) return byUpn;
+        }
+
+        return null;
+    }
 
     let changed = false;
 
     for (const chat of chats) {
         const members = chat.members || [];
 
-        // 채팅 참여자 중 people.json에 등록된 사람 찾기
+        // 채팅 참여자 중 people.json에 등록된 사람 찾기 (email → userId → UPN 폴백)
         const matchedPerson = members.reduce((found, member) => {
             if (found) return found;
-            const email = (member.email || '').toLowerCase();
-            return peopleEmails.get(email) || null;
+            return matchMemberToPerson(member);
         }, null);
 
         if (!matchedPerson) continue;

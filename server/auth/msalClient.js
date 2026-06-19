@@ -84,8 +84,9 @@ function saveToken(tokenResponse) {
  */
 async function getDeviceCodeUrl() {
     return new Promise((resolve, reject) => {
+        // SCOPES를 deviceCodeRequest 정의 이전에 참조 — TDZ 해소
         const deviceCodeRequest = {
-            scopes,
+            scopes: SCOPES,
             deviceCodeCallback: (response) => {
                 resolve({
                     userCode:        response.userCode,
@@ -96,15 +97,15 @@ async function getDeviceCodeUrl() {
             },
         };
 
-        const scopes = SCOPES;
         // acquireTokenByDeviceCode는 내부적으로 deviceCodeCallback을 호출한 뒤 폴링한다.
         // 여기서는 deviceCodeCallback 호출 시점에 resolve하고, 토큰 취득은 acquireTokenByDeviceCode에서 처리한다.
-        pca.acquireTokenByDeviceCode({ scopes, deviceCodeCallback: deviceCodeRequest.deviceCodeCallback })
+        pca.acquireTokenByDeviceCode({ scopes: SCOPES, deviceCodeCallback: deviceCodeRequest.deviceCodeCallback })
             .then(tokenResponse => {
                 if (tokenResponse) saveToken(tokenResponse);
             })
-            .catch(() => {
-                // 사용자가 인증하지 않았거나 취소 — 조용히 처리
+            .catch((err) => {
+                // 사용자가 인증하지 않았거나 취소 — reject로 전파하여 /auth/start가 500 사유를 반환하도록
+                reject(err);
             });
     });
 }

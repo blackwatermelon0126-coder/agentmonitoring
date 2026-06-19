@@ -2199,11 +2199,11 @@ function worldToScreen(worldPos) {
 
 /**
  * 사람 아바타 1개 생성 (구체 + 이름 레이블)
+ * person.position {x, y} 가 있으면 3D 씬 위치에 반영한다. (2D y → 3D z 변환)
+ * position 없으면 격자 기본 위치(오피스 앞 공간)에 자동 배치한다.
  */
 function createPersonAvatar(person) {
     const color = parseInt((person.color || '#4A90E2').replace('#', ''), 16);
-    const px = person.position?.x || 0;
-    const pz = person.position?.y || 0; // 2D y → 3D z
 
     // 구체 캐릭터
     const geo = new THREE.SphereGeometry(0.4, 16, 12);
@@ -2222,11 +2222,20 @@ function createPersonAvatar(person) {
     group.add(sphere);
     group.add(badge);
 
-    // 오피스 앞 공간에 배치 (3D 좌표: x=-5~5, y=0, z=6~10)
-    const idx = personAvatarMap.size;
-    const targetX = -4 + (idx % 5) * 2;
-    const targetZ = 7 + Math.floor(idx / 5) * 2;
-    group.position.set(targetX, 0.4, targetZ);
+    // person.position이 있으면 3D 씬 위치 반영, 없으면 격자 기본 배치
+    if (person.position && (person.position.x !== undefined) && (person.position.y !== undefined)) {
+        // 2D 캔버스 좌표(px) → 3D 씬 좌표 변환: 2D y → 3D z
+        const scale3d = 0.02; // 픽셀 → 3D 단위 스케일 (조정 가능)
+        const px = (person.position.x - 400) * scale3d; // 2D 중앙 기준 정규화
+        const pz = (person.position.y - 300) * scale3d; // 2D y → 3D z
+        group.position.set(px, 0.4, pz);
+    } else {
+        // 기본 격자 배치 — 오피스 앞 공간 (x=-5~5, z=6~10)
+        const idx = personAvatarMap.size;
+        const targetX = -4 + (idx % 5) * 2;
+        const targetZ = 7 + Math.floor(idx / 5) * 2;
+        group.position.set(targetX, 0.4, targetZ);
+    }
 
     _origSceneAdd(group);
 
@@ -2245,7 +2254,6 @@ function syncPersonAvatars(people) {
     // 삭제
     for (const [id, av] of personAvatarMap) {
         if (!newIds.has(id)) {
-            _origSceneAdd(av.group); // scene에서 제거를 위한 trick
             scene.remove(av.group);
             av.labelEl.remove();
             if (av.bubbleEl) av.bubbleEl.remove();
