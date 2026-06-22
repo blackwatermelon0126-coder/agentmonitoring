@@ -75,31 +75,49 @@ async function pollOnce({ getPeople, broadcast, accessToken, lastSeen }) {
     const peopleEmails  = new Map(peopleList.filter(p => p.email).map(p => [p.email.toLowerCase(), p]));
     const peopleUserIds = new Map(peopleList.filter(p => p.userId).map(p => [p.userId.toLowerCase(), p]));
     const peopleUpns    = new Map(peopleList.filter(p => p.userPrincipalName).map(p => [p.userPrincipalName.toLowerCase(), p]));
+    const peopleNames   = new Map(peopleList.filter(p => p.name).map(p => [p.name.toLowerCase().trim(), p]));
 
     /**
-     * Graph 멤버 객체와 people 목록을 email → userId → UPN 순서로 매칭한다.
+     * Graph 멤버 객체와 people 목록을 email → UPN → userId → displayName 순서로 매칭한다.
+     *
+     * Graph /me/chats?$expand=members 응답에서 members[].email은 비어있거나 null일 수 있으므로
+     * userPrincipalName / userId(aadObjectId) / displayName 폴백을 순서대로 시도한다.
+     *
      * @param {object} member - Graph aadUserConversationMember 객체
      * @returns {object|null} 매칭된 person 또는 null
      */
     function matchMemberToPerson(member) {
-        const email = (member.email || '').toLowerCase();
+        const lower = (s) => (s || '').toLowerCase().trim();
+
+        // 1) email 직접 매칭
+        const email = lower(member.email);
         if (email) {
             const byEmail = peopleEmails.get(email);
             if (byEmail) return byEmail;
         }
 
-        // userId 폴백 (Graph 응답의 userId = aadObjectId)
-        const userId = (member.userId || '').toLowerCase();
+        // 2) userPrincipalName → email Map 폴백
+        //    (Graph은 email이 비어 있어도 UPN은 대부분 반환한다)
+        const upn = lower(member.userPrincipalName);
+        if (upn) {
+            const byEmailViaUpn = peopleEmails.get(upn);   // UPN이 email과 동일한 경우
+            if (byEmailViaUpn) return byEmailViaUpn;
+            const byUpn = peopleUpns.get(upn);
+            if (byUpn) return byUpn;
+        }
+
+        // 3) userId(aadObjectId) 폴백
+        const userId = lower(member.userId);
         if (userId) {
             const byUserId = peopleUserIds.get(userId);
             if (byUserId) return byUserId;
         }
 
-        // userPrincipalName 폴백
-        const upn = (member.userPrincipalName || '').toLowerCase();
-        if (upn) {
-            const byUpn = peopleUpns.get(upn);
-            if (byUpn) return byUpn;
+        // 4) displayName → people.name 폴백 (최후 수단)
+        const displayName = lower(member.displayName);
+        if (displayName) {
+            const byName = peopleNames.get(displayName);
+            if (byName) return byName;
         }
 
         return null;

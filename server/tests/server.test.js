@@ -5,7 +5,7 @@
  * 대상: server.js 핵심 함수·엔드포인트
  * 프레임워크: vitest + supertest
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import {
     app,
@@ -19,7 +19,8 @@ import {
     pushActivity,
     ACTIVITY_LIMIT,
     requireLoopback,
-    LOOPBACK_ADDRS
+    LOOPBACK_ADDRS,
+    people
 } from '../server.js';
 
 // ──────────────────────────────────────────────────────────────
@@ -580,5 +581,145 @@ describe('sessionId 기반 멀티세션 지원 (P2-C)', () => {
 
     it('DEFAULT_SESSION 상수는 "default"', () => {
         expect(DEFAULT_SESSION).toBe('default');
+    });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 12. People API (P5-B) — CRUD 회귀 테스트
+// ──────────────────────────────────────────────────────────────
+describe('People API (P5-B)', () => {
+    beforeEach(() => {
+        // 각 테스트 전 people 배열 비우기 — data/people.json 오염 방지
+        people.splice(0, people.length);
+    });
+
+    afterEach(() => {
+        // 각 테스트 후 people 배열 비우기
+        people.splice(0, people.length);
+    });
+
+    // ── POST /api/people ──────────────────────────────────────
+    it('POST /api/people (name+email) → 201, 자동 필드(id·avatarIndex·teamsStatus) 생성', async () => {
+        const res = await request(app)
+            .post('/api/people')
+            .send({ name: '홍길동', email: 'hong@example.com' });
+        expect(res.status).toBe(201);
+        expect(res.body).toHaveProperty('id', expect.any(String));
+        expect(res.body.name).toBe('홍길동');
+        expect(res.body.email).toBe('hong@example.com');
+        expect(res.body).toHaveProperty('avatarIndex', 0); // 첫 번째 person → index 0
+        expect(res.body).toHaveProperty('teamsStatus', 'idle');
+    });
+
+    it('POST /api/people (name 없음) → 400', async () => {
+        const res = await request(app)
+            .post('/api/people')
+            .send({ email: 'noemail@example.com' });
+        expect(res.status).toBe(400);
+        expect(res.body).toHaveProperty('error');
+    });
+
+    it('POST /api/people (email 없음) → 400', async () => {
+        const res = await request(app)
+            .post('/api/people')
+            .send({ name: '이름만' });
+        expect(res.status).toBe(400);
+        expect(res.body).toHaveProperty('error');
+    });
+
+    // ── GET /api/people ───────────────────────────────────────
+    it('GET /api/people → 배열 반환', async () => {
+        const res = await request(app).get('/api/people');
+        expect(res.status).toBe(200);
+        expect(Array.isArray(res.body)).toBe(true);
+    });
+
+    it('POST 후 GET /api/people → 추가된 person 포함', async () => {
+        await request(app)
+            .post('/api/people')
+            .send({ name: '김철수', email: 'kim@example.com' });
+        const res = await request(app).get('/api/people');
+        expect(res.status).toBe(200);
+        expect(res.body.length).toBe(1);
+        expect(res.body[0].name).toBe('김철수');
+    });
+
+    // ── PUT /api/people/:id ───────────────────────────────────
+    it('PUT /api/people/:id → 200 + 수정된 person 반환', async () => {
+        // 먼저 POST로 생성
+        const createRes = await request(app)
+            .post('/api/people')
+            .send({ name: '이영희', email: 'lee@example.com' });
+        const { id } = createRes.body;
+
+        const updateRes = await request(app)
+            .put(`/api/people/${id}`)
+            .send({ name: '이영희(수정)', color: '#FF0000' });
+        expect(updateRes.status).toBe(200);
+        expect(updateRes.body.id).toBe(id);     // id 불변
+        expect(updateRes.body.name).toBe('이영희(수정)');
+        expect(updateRes.body.color).toBe('#FF0000');
+    });
+
+    it('PUT /api/people/:id — id 필드는 불변(body에 id 전달해도 기존 id 유지)', async () => {
+        const createRes = await request(app)
+            .post('/api/people')
+            .send({ name: '박민준', email: 'park@example.com' });
+        const originalId = createRes.body.id;
+
+        const updateRes = await request(app)
+            .put(`/api/people/${originalId}`)
+            .send({ id: 'overwrite-attempt', name: '박민준(수정)' });
+        expect(updateRes.status).toBe(200);
+        expect(updateRes.body.id).toBe(originalId);
+    });
+
+    it('PUT /api/people/:nonexistent-id → 404', async () => {
+        const res = await request(app)
+            .put('/api/people/does-not-exist-uuid')
+            .send({ name: '없는사람' });
+        expect(res.status).toBe(404);
+        expect(res.body).toHaveProperty('error');
+    });
+
+    // ── DELETE /api/people/:id ────────────────────────────────
+    it('DELETE /api/people/:id → 200 { ok: true }', async () => {
+        const createRes = await request(app)
+            .post('/api/people')
+            .send({ name: '최삭제', email: 'choi@example.com' });
+        const { id } = createRes.body;
+
+        const delRes = await request(app).delete(`/api/people/${id}`);
+        expect(delRes.status).toBe(200);
+        expect(delRes.body).toEqual({ ok: true });
+    });
+
+    it('DELETE /api/people/:nonexistent-id → 404', async () => {
+        const res = await request(app).delete('/api/people/no-such-id');
+        expect(res.status).toBe(404);
+        expect(res.body).toHaveProperty('error');
+    });
+
+    // ── POST 후 DELETE → GET에서 사라짐 ──────────────────────
+    it('POST 후 DELETE → GET /api/people에서 해당 person 제거됨', async () => {
+        // person A 추가
+        const aRes = await request(app)
+            .post('/api/people')
+            .send({ name: '강추가', email: 'kang@example.com' });
+        // person B 추가
+        const bRes = await request(app)
+            .post('/api/people')
+            .send({ name: '서유지', email: 'seo@example.com' });
+
+        const idA = aRes.body.id;
+
+        // A 삭제
+        await request(app).delete(`/api/people/${idA}`);
+
+        // GET 확인: A 없음, B 존재
+        const listRes = await request(app).get('/api/people');
+        const ids = listRes.body.map(p => p.id);
+        expect(ids).not.toContain(idA);
+        expect(ids).toContain(bRes.body.id);
     });
 });
