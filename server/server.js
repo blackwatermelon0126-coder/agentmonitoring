@@ -6,8 +6,8 @@ import { fileURLToPath } from 'url';
 import pino from 'pino';
 import { ROLES, ROLE_NAMES } from './shared/roles.js';
 import { loadRecentEntries, appendEntry, ACTIVITY_LIMIT as _ACTIVITY_LIMIT } from './activity-log.js';
-import { getDeviceCodeUrl, getAuthStatus } from './auth/msalClient.js';
-import { startPolling } from './teams/teamsPoller.js';
+import { getDeviceCodeUrl, getAuthStatus, refreshTokenIfNeeded } from './auth/msalClient.js';
+import { startPolling, graphGet, GRAPH_BASE } from './teams/teamsPoller.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 
@@ -28,7 +28,7 @@ app.use(express.json());
 
 // ── origin 루프백 검증 미들웨어 — P4-B ────────────────────────
 // /hook/tool-use, /hook/tool-done, /demo 엔드포인트에 적용.
-// /api/status, /api/roles, /2d, /3d 는 제한 없음.
+// /api/status, /api/roles, /3d 는 제한 없음.
 const LOOPBACK_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
 function requireLoopback(req, res, next) {
@@ -43,8 +43,7 @@ function requireLoopback(req, res, next) {
     res.status(403).json({ error: 'forbidden', reason: 'loopback only' });
 }
 
-// 정적 파일 서빙 (2D/3D 클라이언트)
-app.use('/2d', express.static(path.join(__dirname, '..', 'phaser2d')));
+// 정적 파일 서빙 (3D 클라이언트)
 app.use('/3d', express.static(path.join(__dirname, '..', 'three3d')));
 app.use('/3d/libs/three', express.static(path.join(__dirname, '..', 'three3d', 'node_modules', 'three')));
 
@@ -387,6 +386,50 @@ app.get('/auth/start', async (req, res) => {
 app.get('/auth/status', (req, res) => {
     const status = getAuthStatus();
     res.json(status);
+});
+
+// ── 조직 사용자 조회 API (조직 사용자 피커용) ─────────────────────
+//
+// 메타오피스(3D)에서 "조직에서 추가 (FORMATIONLABS)" 패널이 사용한다.
+//   GET /api/org-users  → CTR 테넌트 내 formationlabs 조직 사용자 목록
+//
+// 조회 전용이므로 requireLoopback 제한을 두지 않는다(기존 /api/* 와 동일).
+// 토큰이 없으면 401 { error: 'not_authenticated' }.
+// 라이브 Graph 권한 부족 시 401/403이 올 수 있으며, 이는 graceful 처리한다.
+// 이 호출은 User.Read.All 로 동작한다(현재 토큰에 이미 포함, 추가 권한 불필요).
+
+const ORG_EMAIL_DOMAIN = '@formationlabs.co.kr';
+
+/**
+ * GET /api/org-users
+ * Graph: GET /users?$select=displayName,mail,userPrincipalName,jobTitle&$top=999
+ * 반환: [{ displayName, email, jobTitle }]  (displayName 오름차순)
+ *   - mail 이 @formationlabs.co.kr 로 끝나는 사용자만 포함 (mail 비면 제외, 대소문자 무시)
+ */
+app.get('/api/org-users', async (req, res) => {
+    const accessToken = await refreshTokenIfNeeded();
+    if (!accessToken) {
+        return res.status(401).json({ error: 'not_authenticated' });
+    }
+    try {
+        const data = await graphGet(
+            `${GRAPH_BASE}/users?$select=displayName,mail,userPrincipalName,jobTitle&$top=999`,
+            accessToken
+        );
+        const users = (data.value || [])
+            .filter(u => u.mail && u.mail.toLowerCase().endsWith(ORG_EMAIL_DOMAIN))
+            .map(u => ({
+                displayName: u.displayName || '',
+                email:       u.mail,
+                jobTitle:    u.jobTitle || '',
+            }))
+            .sort((a, b) => a.displayName.localeCompare(b.displayName));
+        res.json(users);
+    } catch (err) {
+        const status = err.status || 500;
+        logger.warn({ event: 'org_users_error', status, err: err.message }, 'GET /api/org-users failed');
+        res.status(status).json({ error: 'graph_error', status, reason: err.message });
+    }
 });
 
 // ── 사람 아바타 관리 API (P5-B) ──────────────────────────────────

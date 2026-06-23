@@ -36,6 +36,7 @@ const SCOPES = [
     'Chat.ReadBasic',
     'offline_access',
     'User.Read',
+    'User.Read.All',        // 조직 디렉터리 사용자 조회 (formationlabs 멤버) — 조직 사용자 피커용
 ];
 
 // ── 토큰 파일 입출력 ──────────────────────────────────────────────

@@ -1,13 +1,12 @@
 # Agent Monitor — Claude Code 시각화 모니터링
 
-에이전트(Developer, DevOps, QA, PM, Designer, Marketer, Leader)의 실시간 활동을 2D/3D로 시각화합니다.
+에이전트(Developer, DevOps, QA, PM, Leader)의 실시간 활동을 3D로 시각화합니다.
 
 ## 구성
 
 ```
 agentmonitoring/
 ├── server/          # Express HTTP 서버 (상태 관리 · Hook 수신 · API 제공)
-├── phaser2d/        # 2D 픽셀아트 사무실 (Phaser)
 ├── three3d/         # 3D 로우폴리 사무실 (Three.js)
 └── hooks/           # Claude Code Hook 스크립트 (Phase 2 활성화 예정)
 ```
@@ -28,7 +27,6 @@ npm start
 
 | 뷰 | URL |
 |----|-----|
-| 2D 픽셀아트 오피스 (Phaser) | http://localhost:3300/2d |
 | 3D 로우폴리 오피스 (Three.js) | http://localhost:3300/3d |
 
 ### 3. 데모 테스트
@@ -43,7 +41,6 @@ curl -X POST http://localhost:3300/demo
 
 | 라우트 | 설명 |
 |--------|------|
-| `GET /2d` | 2D 픽셀아트 오피스 뷰 (Phaser) |
 | `GET /3d` | 3D 로우폴리 오피스 뷰 (Three.js) |
 | `POST /demo` | 랜덤 에이전트 활동 데모 |
 | `GET /api/status` | 현재 에이전트 상태 조회 |

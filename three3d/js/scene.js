@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createFactory, updateFactory } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
-import { createDetailedPerson as _createDetailedPersonForStairs } from './character.js';
+import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs } from './character.js';
 
 
 // ---- 캐릭터 특성 풀 ----
@@ -1671,56 +1671,11 @@ function updateAgentState(role, state) {
     }
 }
 
-// ---- 활동 피드 (카드뷰) ----
-const FEED_LIMIT = 30;
+// ---- 역할 라벨·색상 매핑 (상태 패널용) ----
 // P1-A: ROLE_LABEL·ROLE_COLOR — /api/roles SSoT 기반 동적 초기화 (아래 initFromRolesApi 참조)
+// activity feed 제거됨 — 매핑은 상태 패널/아바타 색상 정합용으로 유지.
 let ROLE_LABEL = {};
 let ROLE_COLOR = {};
-
-function fmtTime(ts) {
-    const d = new Date(ts);
-    return d.toLocaleTimeString('ko-KR', { hour12: false });
-}
-
-function activityMeta(entry) {
-    const p = entry.params || {};
-    const parts = [];
-    if (p.file) parts.push(`📄 ${p.file}`);
-    if (p.command) parts.push(`$ ${p.command}`);
-    else if (p.description) parts.push(p.description);
-    if (p.pattern) parts.push(`/${p.pattern}/`);
-    if (p.url) parts.push(`→ ${p.url}`);
-    if (p.query) parts.push(`"${p.query}"`);
-    if (p.subagent) parts.push(`[${p.subagent}]`);
-    return parts.join(' · ');
-}
-
-function pushActivityCard(entry) {
-    const list = document.getElementById('feed-list');
-    if (!list) return;
-    const card = document.createElement('div');
-    card.className = `activity-card role-${entry.agent}`;
-    const role = ROLE_LABEL[entry.agent] || entry.agent;
-    const color = ROLE_COLOR[entry.agent] || '#aaa';
-    const meta = activityMeta(entry);
-    card.innerHTML = `
-        <div class="ac-head">
-            <span class="ac-role" style="color:${color}">${role} · ${entry.tool || entry.event || ''}</span>
-            <span class="ac-time">${fmtTime(entry.ts)}</span>
-        </div>
-        <div class="ac-detail">${escapeHtml(entry.detail || '')}</div>
-        ${meta ? `<div class="ac-meta">${escapeHtml(meta)}</div>` : ''}
-        ${entry.result ? `<div class="ac-meta">↳ ${escapeHtml(entry.result)}</div>` : ''}
-    `;
-    list.insertBefore(card, list.firstChild);
-    while (list.children.length > FEED_LIMIT) list.removeChild(list.lastChild);
-    const counter = document.getElementById('feed-count');
-    if (counter) counter.textContent = list.children.length;
-}
-
-function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
 
 // ============================================
 // 메인 루프
@@ -2095,6 +2050,15 @@ function animate() {
     renderer.render(scene, camera);
 }
 
+// ---- 사람 아바타 관리 (P5-D) ----
+// id → { group, sphere, badge, labelEl, bubbleEl, unreadCount }
+// ⚠ TDZ 방지: animate()가 updatePersonLabels()에서 이 Map을 참조하므로, animate() 호출보다 앞에서 선언해야 한다.
+const personAvatarMap = new Map();
+
+// P5-D: 현재 드래그 중인 아바타({group,...} 객체). 드래그 중에는 syncPersonAvatars의
+// 위치 덮어쓰기를 막아 사용자가 끄는 손맛을 유지한다.
+let draggingAvatar = null;
+
 animate();
 
 // ---- /api/roles SSoT 초기화 ----
@@ -2149,13 +2113,7 @@ async function initFromRolesApi() {
 
 initFromRolesApi();
 
-// ---- 사람 아바타 관리 (P5-D) ----
-// id → { group, labelEl, bubbleTimeout }
-const personAvatarMap = new Map();
-
-// P5-D: 현재 드래그 중인 아바타({group,...} 객체). 드래그 중에는 syncPersonAvatars의
-// 위치 덮어쓰기를 막아 사용자가 끄는 손맛을 유지한다.
-let draggingAvatar = null;
+// (personAvatarMap·draggingAvatar 선언은 animate() 호출 앞으로 이동됨 — TDZ 방지)
 
 /**
  * CSS2D 스타일 HTML 오버레이 레이블을 3D 위치에 붙인다.
@@ -2207,7 +2165,7 @@ function worldToScreen(worldPos) {
 const PERSON_SCALE_3D = 0.02; // 픽셀 → 3D 단위 스케일
 const PERSON_ORIGIN_X = 400;  // 2D 캔버스 중앙 x
 const PERSON_ORIGIN_Y = 300;  // 2D 캔버스 중앙 y
-const PERSON_GROUND_Y = 0.4;  // 아바타 구체 중심 높이(바닥 위)
+const PERSON_GROUND_Y = 0;    // 상세 캐릭터는 발이 그룹 원점(y=0)에 위치 → 바닥 높이 0
 
 /** 서버 position {x,y}(2D px) → 3D 씬 좌표 {x,z} */
 function personPosToScene(pos) {
@@ -2226,28 +2184,45 @@ function scenePosToPerson(sceneX, sceneZ) {
 }
 
 /**
- * 사람 아바타 1개 생성 (구체 + 이름 레이블)
- * person.position {x, y} 가 있으면 3D 씬 위치에 반영한다. (2D y → 3D z 변환)
- * position 없으면 격자 기본 위치(오피스 앞 공간)에 자동 배치한다.
+ * 사람 아바타 1개 생성 (상세 캐릭터 모델 + 이름 레이블)
+ *
+ * 기존 에이전트(developer/devops 등)와 동일한 character.js 의 createDetailedPerson 으로
+ * 상세 캐릭터를 만든다. person.color 는 셔츠 색에 반영한다.
+ * person.position {x, y} 가 있으면 3D 씬 위치에 반영(2D y → 3D z), 없으면 격자 기본 배치.
  */
 function createPersonAvatar(person) {
     const color = parseInt((person.color || '#4A90E2').replace('#', ''), 16);
 
-    // 구체 캐릭터
-    const geo = new THREE.SphereGeometry(0.4, 16, 12);
-    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.2 });
-    const sphere = new THREE.Mesh(geo, mat);
-    sphere.castShadow = true;
+    // 상세 캐릭터 모델 — color 를 셔츠색에 반영, 나머지 외형은 기본값.
+    // person.id 해시로 외형을 약간 다양화(머리/피부/바지/신발은 결정적으로 선택).
+    const personObj = createDetailedPerson({
+        gender:     'male',
+        skinColor:  0xFFDFC4,
+        hairColor:  0x3E2723,
+        shirtColor: color,        // 사람 색상 → 셔츠
+        pantsColor: 0x263238,
+        shoeColor:  0x212121,
+        hairStyle:  'short',
+    });
+    const group = personObj.group;
+    group.scale.set(0.9, 0.9, 0.9);   // 계단 에이전트와 동일 스케일
 
-    // 배지 (읽지 않은 수)
-    const badgeGeo = new THREE.SphereGeometry(0.15, 8, 8);
+    // 드래그 레이캐스트 식별용: 그룹의 모든 메쉬에 personId 부착 + 픽 대상 수집
+    const pickMeshes = [];
+    group.traverse(obj => {
+        if (obj.isMesh) {
+            obj.userData.personId = person.id;
+            obj.castShadow = true;
+            pickMeshes.push(obj);
+        }
+    });
+
+    // 배지 (읽지 않은 수) — 머리 위
+    const badgeGeo = new THREE.SphereGeometry(0.13, 8, 8);
     const badgeMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
     const badge = new THREE.Mesh(badgeGeo, badgeMat);
-    badge.position.set(0.35, 0.55, 0);
+    badge.position.set(0.28, 2.0, 0);
     badge.visible = false;
-
-    const group = new THREE.Group();
-    group.add(sphere);
     group.add(badge);
 
     // person.position이 있으면 3D 씬 위치 반영, 없으면 격자 기본 배치
@@ -2263,15 +2238,12 @@ function createPersonAvatar(person) {
         group.position.set(targetX, PERSON_GROUND_Y, targetZ);
     }
 
-    // 레이캐스트 드래그 식별용: sphere에 personId 부착
-    sphere.userData.personId = person.id;
-
     _origSceneAdd(group);
 
     // HTML 레이블
     const labelEl = makePersonLabel(person.name, person.color || '#4A90E2');
 
-    personAvatarMap.set(person.id, { group, sphere, badge, labelEl, bubbleEl: null, unreadCount: 0 });
+    personAvatarMap.set(person.id, { group, personObj, pickMeshes, badge, labelEl, bubbleEl: null, unreadCount: 0 });
 }
 
 /**
@@ -2337,15 +2309,16 @@ function showTeamsNotification3D(data) {
 // 애니메이션 루프에서 레이블 위치 갱신 (animate 함수 내에서 호출됨)
 function updatePersonLabels() {
     for (const [, av] of personAvatarMap) {
+        // 상세 캐릭터(스케일 0.9, 키 약 1.6)의 머리 위로 레이블·말풍선 배치
         const above = av.group.position.clone();
-        above.y += 1.0;
+        above.y += 1.9;
         const s = worldToScreen(above);
         av.labelEl.style.left = `${s.x}px`;
         av.labelEl.style.top  = `${s.y}px`;
 
         if (av.bubbleEl) {
             const bubblePos = av.group.position.clone();
-            bubblePos.y += 1.6;
+            bubblePos.y += 2.3;
             const bs = worldToScreen(bubblePos);
             av.bubbleEl.style.left = `${bs.x}px`;
             av.bubbleEl.style.top  = `${bs.y}px`;
@@ -2385,8 +2358,177 @@ function updatePersonLabels() {
     document.body.appendChild(btn);
 })();
 
+// ---- "조직에서 추가 (FORMATIONLABS)" 패널 (조직 사용자 → 아바타) ----
+// 기존 패널 스타일과 일관: 반투명 검정 배경·monospace·흰 글씨.
+// 위치: 좌상단(#info·people-panel·status-panel 과 겹치지 않는 빈 영역).
+(function createOrgUserPicker3D() {
+    const API_BASE = `http://${location.hostname}:3300`;
+    // 사용자 추가 시 순환 지정할 색상 팔레트
+    const COLOR_PALETTE = ['#4A90E2', '#E67E22', '#27AE60', '#8E44AD', '#E74C3C'];
+    let colorCursor = 0;
+    let orgUsers = [];   // 조회된 조직 사용자 캐시 (검색 필터용)
+
+    function escAttr(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    // ── 패널 컨테이너 ──
+    const panel = document.createElement('div');
+    panel.id = 'org-picker';
+    panel.style.cssText = `
+        position: absolute; top: 10px; left: 10px; z-index: 100;
+        color: #fff; font-family: monospace; font-size: 12px;
+        background: rgba(0,0,0,0.6); padding: 10px 14px; border-radius: 8px;
+        backdrop-filter: blur(4px); width: 280px; max-height: 60vh;
+        display: flex; flex-direction: column; overflow: hidden;
+    `;
+
+    // 토글 버튼(헤더)
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; cursor:pointer;';
+    header.innerHTML = `
+        <span class="section-label" style="margin:0; text-transform:uppercase; letter-spacing:1px; color:#888;">조직에서 추가 (FORMATIONLABS)</span>
+        <span id="op-toggle" style="color:#aaa;">＋</span>
+    `;
+
+    // 본문(접힘 기본)
+    const bodyEl = document.createElement('div');
+    bodyEl.style.cssText = 'margin-top:8px; display:none; flex-direction:column; overflow:hidden; min-height:0;';
+    bodyEl.innerHTML = `
+        <input id="op-search" type="text" placeholder="이름/이메일 검색…"
+            style="background:rgba(255,255,255,0.06); color:#fff; border:1px solid #333;
+                   border-radius:4px; padding:5px 8px; font-family:monospace; font-size:11px;
+                   outline:none; margin-bottom:8px;" />
+        <div id="op-list" style="overflow-y:auto; min-height:0; max-height:42vh;
+            scrollbar-width:thin; scrollbar-color:#444 transparent;"></div>
+        <div id="op-status" style="color:#888; font-size:10px; margin-top:6px;"></div>
+    `;
+
+    panel.appendChild(header);
+    panel.appendChild(bodyEl);
+    document.body.appendChild(panel);
+
+    const searchEl = bodyEl.querySelector('#op-search');
+    const listEl   = bodyEl.querySelector('#op-list');
+    const statusEl = bodyEl.querySelector('#op-status');
+    const toggleEl = header.querySelector('#op-toggle');
+
+    function setStatus(msg, color = '#888') {
+        statusEl.textContent = msg || '';
+        statusEl.style.color = color;
+    }
+
+    let loaded = false;
+    header.onclick = () => {
+        const open = bodyEl.style.display === 'none';
+        bodyEl.style.display = open ? 'flex' : 'none';
+        toggleEl.textContent = open ? '－' : '＋';
+        if (open && !loaded) { loaded = true; loadOrgUsers(); }
+    };
+
+    // 검색창 입력 → 필터 렌더
+    searchEl.addEventListener('input', () => renderUsers(searchEl.value));
+
+    // ── 1. 조직 사용자 조회 ──
+    async function loadOrgUsers() {
+        setStatus('조직 사용자 불러오는 중…');
+        listEl.innerHTML = '';
+        try {
+            const res = await fetch(`${API_BASE}/api/org-users`);
+            if (res.status === 401) { setStatus('조직 인증 필요 (로그인 후 사용)', '#ff0'); return; }
+            if (!res.ok) { setStatus(`사용자 조회 실패 (${res.status})`, '#f66'); return; }
+            orgUsers = await res.json();
+            if (!Array.isArray(orgUsers) || orgUsers.length === 0) {
+                setStatus('표시할 사용자가 없습니다.');
+                return;
+            }
+            setStatus(`${orgUsers.length}명`);
+            renderUsers(searchEl.value);
+        } catch (e) {
+            setStatus('서버 오류: ' + e.message, '#f66');
+        }
+    }
+
+    // ── 2. 사용자 목록 렌더 (검색어로 필터) ──
+    function renderUsers(query) {
+        const q = (query || '').toLowerCase().trim();
+        const filtered = q
+            ? orgUsers.filter(u =>
+                (u.displayName || '').toLowerCase().includes(q)
+                || (u.email || '').toLowerCase().includes(q))
+            : orgUsers;
+
+        listEl.innerHTML = '';
+        if (filtered.length === 0) {
+            const empty = document.createElement('div');
+            empty.style.cssText = 'color:#888; font-size:10px; padding:4px 0;';
+            empty.textContent = '검색 결과 없음';
+            listEl.appendChild(empty);
+            return;
+        }
+        filtered.forEach(u => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 0; border-top:1px solid #2a2a2a;';
+            // 부제: jobTitle 있으면 jobTitle, 없으면 email
+            const sub = u.jobTitle || u.email;
+            row.innerHTML = `
+                <div style="min-width:0;">
+                    <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escAttr(u.displayName)}</div>
+                    <div style="color:#888; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escAttr(sub)}</div>
+                </div>
+            `;
+            const addBtn = document.createElement('button');
+            addBtn.textContent = '추가';
+            addBtn.style.cssText = `
+                flex:none; background:#2ecc71; color:#fff; border:none; border-radius:4px;
+                padding:3px 10px; font-family:monospace; font-size:11px; cursor:pointer; font-weight:bold;
+            `;
+            addBtn.onmouseover = () => { if (!addBtn.disabled) addBtn.style.background = '#27ae60'; };
+            addBtn.onmouseout  = () => { if (!addBtn.disabled) addBtn.style.background = '#2ecc71'; };
+            addBtn.onclick = () => addUser(u, addBtn);
+            row.appendChild(addBtn);
+            listEl.appendChild(row);
+        });
+    }
+
+    // ── 3. 사용자 추가 (중복 email 방지) ──
+    async function addUser(user, addBtn) {
+        addBtn.disabled = true;
+        addBtn.textContent = '…';
+        try {
+            // 중복 확인: 이미 같은 email 이 있으면 추가하지 않음
+            const existing = await fetch(`${API_BASE}/api/people`).then(r => r.json()).catch(() => []);
+            const dup = Array.isArray(existing)
+                && existing.some(p => (p.email || '').toLowerCase() === (user.email || '').toLowerCase());
+            if (dup) {
+                addBtn.textContent = '이미 있음';
+                return;
+            }
+            const color = COLOR_PALETTE[colorCursor % COLOR_PALETTE.length];
+            colorCursor++;
+            const res = await fetch(`${API_BASE}/api/people`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: user.displayName, email: user.email, color }),
+            });
+            if (!res.ok) {
+                addBtn.textContent = '실패';
+                addBtn.disabled = false;
+                return;
+            }
+            // people-update 브로드캐스트로 아바타가 자동 표시됨
+            addBtn.textContent = '추가됨';
+        } catch (e) {
+            addBtn.disabled = false;
+            addBtn.textContent = '추가';
+            setStatus('서버 오류: ' + e.message, '#f66');
+        }
+    }
+})();
+
 // ---- 사람 아바타 드래그 (P5-D) ----
-// 레이캐스트로 아바타 구체를 집어 바닥 평면(y=PERSON_GROUND_Y) 위로 끌고,
+// 레이캐스트로 아바타 캐릭터 메쉬를 집어 바닥 평면(y=PERSON_GROUND_Y) 위로 끌고,
 // 드래그 종료 시 새 좌표를 서버에 PUT하여 영속화한다.
 (function setupPersonDrag3D() {
     const raycaster = new THREE.Raycaster();
@@ -2403,12 +2545,14 @@ function updatePersonLabels() {
         ndc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
     }
 
-    /** 현재 포인터 광선이 만나는 첫 아바타 구체를 반환 (없으면 null) */
-    function pickAvatarSphere() {
-        const spheres = [];
-        for (const [, av] of personAvatarMap) spheres.push(av.sphere);
-        if (spheres.length === 0) return null;
-        const hits = raycaster.intersectObjects(spheres, false);
+    /** 현재 포인터 광선이 만나는 첫 아바타 캐릭터 메쉬를 반환 (없으면 null) */
+    function pickAvatarMesh() {
+        const meshes = [];
+        for (const [, av] of personAvatarMap) {
+            if (av.pickMeshes) meshes.push(...av.pickMeshes);
+        }
+        if (meshes.length === 0) return null;
+        const hits = raycaster.intersectObjects(meshes, false);
         return hits.length ? hits[0].object : null;
     }
 
@@ -2416,9 +2560,9 @@ function updatePersonLabels() {
         if (ev.button !== 0) return; // 좌클릭만
         toNdc(ev);
         raycaster.setFromCamera(ndc, camera);
-        const sphere = pickAvatarSphere();
-        if (!sphere) return;
-        const id = sphere.userData.personId;
+        const mesh = pickAvatarMesh();
+        if (!mesh) return;
+        const id = mesh.userData.personId;
         const av = personAvatarMap.get(id);
         if (!av) return;
         draggingAvatar = av;
@@ -2467,10 +2611,8 @@ function connectWS() {
         const d = JSON.parse(e.data);
         if (d.type === 'init') {
             Object.entries(d.agents).forEach(([r, s]) => updateAgentState(r, s));
-            if (Array.isArray(d.activity)) d.activity.forEach(pushActivityCard);
         } else if (d.type === 'agent-update') {
             updateAgentState(d.agent, d.state);
-            if (d.activity) pushActivityCard(d.activity);
         } else if (d.type === 'people-update') {
             syncPersonAvatars(d.people);
         } else if (d.type === 'teams-notification') {

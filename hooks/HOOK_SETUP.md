@@ -24,7 +24,7 @@ CLAUDE_ROLE 환경변수로 역할을 지정합니다:
 2. 또는 Claude Code 실행 전 터미널에서 `$env:CLAUDE_ROLE="pm"` 실행
 
 ## 이벤트 흐름
-PreToolUse/PostToolUse/Stop → agent-monitor-hook.js → POST /hook/tool-use → 2D/3D 시각화
+PreToolUse/PostToolUse/Stop → agent-monitor-hook.js → POST /hook/tool-use → 3D 시각화
 
 ## 서버 미기동 시
 Hook 실행 시 서버가 꺼져 있으면 1.5초 후 자동으로 종료(Claude Code 세션 차단 없음).

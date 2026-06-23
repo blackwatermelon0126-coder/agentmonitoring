@@ -20,43 +20,6 @@
             background: rgba(0,0,0,0.6); padding: 12px; border-radius: 8px;
             min-width: 280px; backdrop-filter: blur(4px);
         }
-        #activity-feed {
-            position: absolute; top: 130px; right: 10px;
-            width: 360px; max-height: calc(100vh - 150px);
-            color: #fff; font-family: monospace; font-size: 11px;
-            background: rgba(0,0,0,0.6); padding: 10px 12px; border-radius: 8px;
-            backdrop-filter: blur(4px);
-            display: flex; flex-direction: column; overflow: hidden;
-        }
-        #activity-feed .feed-header {
-            display: flex; justify-content: space-between; align-items: center;
-            padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid #333;
-        }
-        #activity-feed .feed-list {
-            overflow-y: auto; flex: 1; min-height: 200px;
-            scrollbar-width: thin; scrollbar-color: #444 transparent;
-        }
-        #activity-feed .feed-list::-webkit-scrollbar { width: 6px; }
-        #activity-feed .feed-list::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
-        .activity-card {
-            border-left: 3px solid #666; padding: 6px 8px; margin-bottom: 6px;
-            background: rgba(255,255,255,0.04); border-radius: 4px;
-            animation: slideIn 0.3s ease;
-        }
-        @keyframes slideIn { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
-        .activity-card .ac-head {
-            display: flex; justify-content: space-between; gap: 8px; margin-bottom: 2px;
-        }
-        .activity-card .ac-role { font-weight: bold; font-size: 10px; }
-        .activity-card .ac-time { color: #888; font-size: 10px; }
-        .activity-card .ac-detail { color: #ddd; word-break: break-all; }
-        .activity-card .ac-meta { color: #888; font-size: 10px; margin-top: 2px; word-break: break-all; }
-        /* P1-A: 5역할 색상 — shared/roles.js SSoT 정합 */
-        .activity-card.role-developer { border-left-color: #4A90D9; }
-        .activity-card.role-devops    { border-left-color: #E67E22; }
-        .activity-card.role-qa        { border-left-color: #27AE60; }
-        .activity-card.role-pm        { border-left-color: #8E44AD; }
-        .activity-card.role-leader    { border-left-color: #E74C3C; }
         .agent-detail { color: #aaa; font-size: 10px; margin-left: 16px; word-break: break-all; }
         #people-panel {
             position: absolute; top: 10px; right: 10px;
@@ -106,14 +69,6 @@
         <div class="agent-detail" id="meta-pm"></div>
         <div class="agent-row"><span class="dot idle" id="dot-leader"></span><span style="color:#E74C3C">LEAD</span> <span id="txt-leader">idle</span></div>
         <div class="agent-detail" id="meta-leader"></div>
-    </div>
-
-    <div id="activity-feed">
-        <div class="feed-header">
-            <span class="section-label" style="margin:0">Activity Feed</span>
-            <span style="color:#666; font-size:10px;" id="feed-count">0</span>
-        </div>
-        <div class="feed-list" id="feed-list"></div>
     </div>
 
     <script type="importmap">

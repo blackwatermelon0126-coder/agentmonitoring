@@ -2,7 +2,7 @@
 
 > 대상: WJ_MONITORING-P2-B  
 > 작성일: 2026-06-18  
-> 목적: 실 Claude Code 세션에서 도구 이벤트 → 서버 → 2D/3D 시각화까지 종단 간 동작을 검증한다.
+> 목적: 실 Claude Code 세션에서 도구 이벤트 → 서버 → 3D 시각화까지 종단 간 동작을 검증한다.
 
 ---
 
@@ -56,13 +56,12 @@ node server.js
 
 | URL | 설명 | 확인 항목 |
 |-----|------|-----------|
-| `http://localhost:3300/2d` | Phaser 2D 시각화 | 캐릭터 5개(developer·devops·qa·pm·leader) 표시, 모두 idle 상태 |
 | `http://localhost:3300/3d` | Three.js 3D 시각화 | 3D 구체 5개 표시, 모두 idle 색상(회색) |
 | `http://localhost:3300/api/status` | 상태 JSON | `{"developer":{"status":"idle",...},...}` |
 
 ### 스크린샷 포인트 A — 초기 idle 상태
 
-브라우저에서 `/2d` 열었을 때 모든 캐릭터가 idle 상태(정지 애니메이션)인 화면을 캡처한다.
+브라우저에서 `/3d` 열었을 때 모든 구체가 idle 색상(회색)인 화면을 캡처한다.
 
 ---
 
@@ -105,12 +104,12 @@ node tools/test-hook.js
 
 #### 스크린샷 포인트 B — test-hook.js 실행 중 브라우저 변화
 
-`test-hook.js` 실행 중 브라우저 `/2d` 화면을 관찰한다.
+`test-hook.js` 실행 중 브라우저 `/3d` 화면을 관찰한다.
 
-- Read 전송 직후: developer 캐릭터가 reading 애니메이션으로 전환
-- Edit 전송 직후: developer 캐릭터가 coding 애니메이션으로 전환
-- Bash 전송 직후: devops 캐릭터가 building 애니메이션으로 전환
-- Stop 전송 직후: 모든 캐릭터가 idle 상태로 복귀
+- Read 전송 직후: developer 구체가 active 색상(파란색)으로 전환
+- Edit 전송 직후: developer 구체가 coding 액션 색상으로 전환
+- Bash 전송 직후: devops 구체가 building 액션 색상으로 전환
+- Stop 전송 직후: 모든 구체가 idle 색상(회색)으로 복귀
 
 ---
 
@@ -165,7 +164,7 @@ node tools/test-hook-offline.js
 ### 6-1. 사전 조건
 
 - [ ] 서버가 포트 3300에 기동 중 (`node server.js` 또는 docker compose)
-- [ ] 브라우저 두 탭 열기: `/2d`, `/3d`
+- [ ] 브라우저 탭 열기: `/3d`
 - [ ] `.claude/settings.json`에 PreToolUse/PostToolUse/Stop hook 등록 확인
 
 #### settings.json hook 등록 확인 위치
@@ -189,17 +188,15 @@ D:\private\agentmonitoring\.claude\settings.json
 ### 6-2. Read 도구 사용 → working 전환 확인
 
 1. Claude Code 세션에서 임의 파일 Read 실행
-2. 브라우저 `/2d` 확인: developer 캐릭터가 reading 애니메이션으로 전환됨
-3. 브라우저 `/3d` 확인: developer 구체가 active 색상(파란색)으로 변경됨
-4. 브라우저 activity feed 확인: 최근 이벤트 카드에 "📖 [파일명]" 항목 표시
+2. 브라우저 `/3d` 확인: developer 구체가 active 색상(파란색)으로 변경됨
+3. 브라우저 activity feed 확인: 최근 이벤트 카드에 "📖 [파일명]" 항목 표시
 
-#### 스크린샷 포인트 C — Read 직후 2D/3D 상태
+#### 스크린샷 포인트 C — Read 직후 3D 상태
 
 ### 6-3. Stop 이벤트 → 전체 idle 전환 확인
 
 1. Claude Code 세션이 작업을 완료하거나 수동 종료
-2. 브라우저 `/2d` 확인: 모든 캐릭터가 idle 상태로 복귀
-3. 브라우저 `/3d` 확인: 모든 구체가 idle 색상(회색)으로 복귀
+2. 브라우저 `/3d` 확인: 모든 구체가 idle 색상(회색)으로 복귀
 
 #### 스크린샷 포인트 D — Stop 후 전체 idle
 
@@ -220,7 +217,7 @@ D:\private\agentmonitoring\.claude\settings.json
 
 ### 수동 검증 (사용자 브라우저 확인)
 
-- [ ] `/2d` 초기 로드 — 5개 캐릭터 idle 상태 (스크린샷 A)
+- [ ] `/3d` 초기 로드 — 5개 구체 idle 상태 (스크린샷 A)
 - [ ] Read 도구 사용 → developer working 전환 확인 (스크린샷 C)
 - [ ] activity feed 카드 — 최근 이벤트 실시간 표시 확인
 - [ ] Stop 이벤트 → 모든 역할 idle 전환 확인 (스크린샷 D)
@@ -234,6 +231,6 @@ D:\private\agentmonitoring\.claude\settings.json
 |------|------|------|
 | `test-hook.js` — "서버가 응답하지 않습니다" | 서버 미기동 | `cd server && node server.js` 실행 |
 | `test-hook-offline.js` — 타임아웃 FAIL | hook 스크립트 경로 오류 | `HOOK_SCRIPT` 경로 확인 |
-| 2D 캐릭터 변화 없음 | WebSocket 연결 안됨 | 브라우저 개발자 도구 → Network → WS 탭 확인 |
+| 3D 구체 변화 없음 | WebSocket 연결 안됨 | 브라우저 개발자 도구 → Network → WS 탭 확인 |
 | hook은 전송됐는데 시각화 미반영 | 역할 키 불일치 | `/api/status` 응답 확인, role 값 검증 |
 | Stop hook 미발화 | settings.json 미등록 | `.claude/settings.json` hook 등록 재확인 |

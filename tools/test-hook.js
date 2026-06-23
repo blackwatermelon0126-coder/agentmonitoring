@@ -225,7 +225,7 @@ async function main() {
 
     // ─── 결과 요약 ────────────────────────────────────────────────────
     console.log(`\n${color(C.bold, "=== 시뮬레이션 완료 ===")}`);
-    console.log(`브라우저에서 확인: http://${HOST}:${PORT}/2d  또는  http://${HOST}:${PORT}/3d\n`);
+    console.log(`브라우저에서 확인: http://${HOST}:${PORT}/3d\n`);
 }
 
 main().catch((e) => {

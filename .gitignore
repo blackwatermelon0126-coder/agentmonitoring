@@ -7,3 +7,4 @@ settings.local.json
 data/
 data/*.jsonl
 *.db
+coverage/

@@ -2,7 +2,7 @@
 
 > **대상**: 신규 역할·뷰·Hook 이벤트를 추가하려는 주니어/시니어 개발자
 > **기준 코드 버전**: Phase 4 (WJ_MONITORING-P4-C)
-> **관련 파일**: `server/shared/roles.js`, `server/server.js`, `hooks/agent-monitor-hook.js`, `phaser2d/`, `three3d/`
+> **관련 파일**: `server/shared/roles.js`, `server/server.js`, `hooks/agent-monitor-hook.js`, `three3d/`
 
 ---
 
@@ -18,7 +18,7 @@
 
 ### 개요
 
-역할(role)은 `server/shared/roles.js` 한 곳에서만 정의한다. 이 파일이 SSoT(Single Source of Truth)이므로 여기만 수정하면 서버·2D·3D 클라이언트가 모두 자동으로 반영된다.
+역할(role)은 `server/shared/roles.js` 한 곳에서만 정의한다. 이 파일이 SSoT(Single Source of Truth)이므로 여기만 수정하면 서버·3D 클라이언트가 모두 자동으로 반영된다.
 
 ### 수정 포인트: `server/shared/roles.js`
 
@@ -52,18 +52,17 @@ const ROLES = [
 roles.js (SSoT)
   ├─ server.js — ROLES import → agentStates 초기화 (신규 역할 키 자동 추가)
   │                           → GET /api/roles 응답에 신규 역할 포함
-  ├─ phaser2d/js/game.js      — fetch('/api/roles') 호출 → 카드 동적 생성
   └─ three3d/js/scene.js      — fetch('/api/roles') 호출 → 3D 큐브 동적 생성
 ```
 
-`server.js`, `game.js`, `scene.js`는 시작 시 `/api/roles`를 동적으로 호출하기 때문에 별도 수정 없이 역할이 추가된다.
+`server.js`, `scene.js`는 시작 시 `/api/roles`를 동적으로 호출하기 때문에 별도 수정 없이 역할이 추가된다.
 
 ### 체크리스트
 
 - [ ] `server/shared/roles.js`에 역할 객체 추가
 - [ ] 서버 재기동 (`npm start` 또는 `docker compose restart server`)
 - [ ] `GET /api/roles` 응답에서 신규 역할 확인
-- [ ] 2D(`/2d`) 및 3D(`/3d`) 화면에서 신규 역할 카드가 표시되는지 확인
+- [ ] 3D(`/3d`) 화면에서 신규 역할 카드가 표시되는지 확인
 - [ ] `hooks/agent-monitor-hook.js`의 `CLAUDE_ROLE` 환경변수를 신규 역할 `id`로 설정하여 Hook 전송 테스트
 
 ---
@@ -72,13 +71,12 @@ roles.js (SSoT)
 
 ### 개요
 
-현재 2D 뷰(`/2d`, Phaser)와 3D 뷰(`/3d`, Three.js) 두 가지가 제공된다. 신규 뷰(예: 테이블 뷰, 타임라인 뷰)를 추가하려면 정적 디렉토리를 생성하고 Express 라우트를 등록한다.
+현재 3D 뷰(`/3d`, Three.js)가 제공된다. 신규 뷰(예: 테이블 뷰, 타임라인 뷰)를 추가하려면 정적 디렉토리를 생성하고 Express 라우트를 등록한다.
 
 ### 디렉토리 구조
 
 ```
 agentmonitoring/
-  phaser2d/          ← 기존 2D 뷰
   three3d/           ← 기존 3D 뷰
   tabview/           ← 신규 뷰 (예시 이름)
     index.html       ← 진입점 HTML
@@ -93,7 +91,6 @@ agentmonitoring/
 
 ```js
 // 기존 라우트
-app.use('/2d', express.static(path.join(__dirname, '..', 'phaser2d')));
 app.use('/3d', express.static(path.join(__dirname, '..', 'three3d')));
 
 // 신규 뷰 라우트 추가

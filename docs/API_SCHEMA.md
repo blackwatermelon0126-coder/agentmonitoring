@@ -15,7 +15,7 @@
    - 1.3 [GET /api/status](#13-get-apistatus)
    - 1.4 [GET /api/roles](#14-get-apiroles)
    - 1.5 [POST /demo](#15-post-demo)
-   - 1.6 [GET /2d, GET /3d](#16-get-2d--get-3d)
+   - 1.6 [GET /3d](#16-get-3d)
 2. [WebSocket 메시지 계약](#2-websocket-메시지-계약)
    - 2.1 [init 메시지](#21-init-메시지)
    - 2.2 [agent-update 메시지](#22-agent-update-메시지)
@@ -261,13 +261,12 @@ Hook 이벤트 `Stop` / `SessionEnd` / `SubagentStop` 수신 시 호출된다.
 
 ---
 
-### 1.6 GET /2d / GET /3d
+### 1.6 GET /3d
 
 정적 파일 서빙. 클라이언트 시각화 애플리케이션을 내려준다.
 
 | 경로 | 서빙 디렉토리 | 설명 |
 |------|-------------|------|
-| `GET /2d/*` | `phaser2d/` | Phaser 기반 2D 시각화 클라이언트 |
 | `GET /3d/*` | `three3d/` | Three.js 기반 3D 시각화 클라이언트 |
 | `GET /3d/libs/three/*` | `three3d/node_modules/three/` | Three.js 라이브러리 정적 제공 |
 

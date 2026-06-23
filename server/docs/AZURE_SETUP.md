@@ -88,8 +88,10 @@ cp .env.example .env
 ```dotenv
 AZURE_CLIENT_ID=<2단계에서 메모한 애플리케이션 ID>
 AZURE_TENANT_ID=<2단계에서 메모한 테넌트 ID>
-AZURE_REDIRECT_URI=http://localhost:3300/auth/callback
 ```
+
+> ⚠ Device Code Flow는 **리디렉션 URI를 사용하지 않는다.** `AZURE_REDIRECT_URI`는 입력하지 말 것
+> (코드 `msalClient.js`는 이 변수를 읽지 않으며, Azure 앱에도 리디렉션 URI를 등록하지 않는다 — 1단계 참조).
 
 > `.env` 파일은 `.gitignore`에 포함되어 있으므로 Git에 커밋되지 않는다.
 
