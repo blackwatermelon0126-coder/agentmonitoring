@@ -8,6 +8,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createFactory, updateFactory } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
 import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs } from './character.js';
+import { buildTeamsDeeplink } from './deeplink.js';
 
 
 // ---- 캐릭터 특성 풀 ----
@@ -2133,17 +2134,52 @@ function makePersonLabel(name, color) {
     return el;
 }
 
-function makeBubbleEl(text) {
+/**
+ * 말풍선 DOM 생성.
+ * P5-E-B: clickable=true이면 클릭 가능 스타일(pointer-events:auto·cursor:pointer·hover 강조).
+ *         clickable=false(딥링크 식별자 부재)이면 기존처럼 클릭 비활성(cursor:default).
+ * P5-E-C: clickable=true이면 hover 시 "💬 Teams로 열기" 힌트를 노출하여 클릭 가능함을 직관적으로 표현.
+ *         (딥링크 불가 말풍선에는 힌트·강조 없음 — graceful 보존.)
+ */
+function makeBubbleEl(text, clickable = false) {
     const el = document.createElement('div');
     el.style.cssText = `
-        position: absolute; pointer-events: none;
+        position: absolute; pointer-events: ${clickable ? 'auto' : 'none'};
+        cursor: ${clickable ? 'pointer' : 'default'};
         background: #ffffffee; color: #222; border-radius: 8px;
         padding: 4px 8px; font-size: 10px; font-family: monospace;
         white-space: nowrap; transform: translateX(-50%);
         border: 1px solid #aaa; max-width: 200px; overflow: hidden;
         text-overflow: ellipsis;
+        transition: box-shadow 0.12s, border-color 0.12s;
     `;
-    el.textContent = text;
+    // 미리보기 텍스트는 별도 span에 담아 힌트 라벨과 분리(힌트가 텍스트를 덮어쓰지 않도록).
+    const textEl = document.createElement('span');
+    textEl.textContent = text;
+    el.appendChild(textEl);
+
+    if (clickable) {
+        // P5-E-C: 클릭 힌트 라벨 — 평소 숨김, hover 시 노출.
+        const hintEl = document.createElement('span');
+        hintEl.textContent = '💬 Teams로 열기';
+        hintEl.style.cssText = `
+            display: none; margin-left: 6px; color: #4A90E2;
+            font-weight: bold; font-size: 9px;
+        `;
+        el.appendChild(hintEl);
+
+        // hover 시 시각 강조(테두리·그림자) + 클릭 힌트 노출
+        el.onmouseover = () => {
+            el.style.borderColor = '#4A90E2';
+            el.style.boxShadow = '0 2px 8px rgba(74,144,226,0.5)';
+            hintEl.style.display = 'inline';
+        };
+        el.onmouseout = () => {
+            el.style.borderColor = '#aaa';
+            el.style.boxShadow = 'none';
+            hintEl.style.display = 'none';
+        };
+    }
     document.body.appendChild(el);
     return el;
 }
@@ -2279,31 +2315,72 @@ function syncPersonAvatars(people) {
     }
 }
 
+// P5-E-C: 말풍선 표시 정책 상수.
+// 기본 표시 시간 6초(설계서 §10 — 클릭 기회 확보를 위해 2초→6초 연장).
+// hover로 일시정지된 타이머는 마우스 이탈 후 짧은 grace(1.5초) 뒤 재개한다.
+const BUBBLE_TTL_MS = 6000;
+const BUBBLE_GRACE_MS = 1500;
+
 /**
- * Teams 알림: 아바타 위 말풍선 2초 표시
+ * Teams 알림: 아바타 위 말풍선 표시 (P5-E-C: 6초 + hover 시 타이머 일시정지)
  */
 function showTeamsNotification3D(data) {
     const av = personAvatarMap.get(data.personId);
     if (!av) return;
 
-    const msg = data.message;
+    const msg = data.message || {};
     const preview = `${msg.senderName}: ${(msg.text || '').slice(0, 30)}`;
+
+    // P5-E-B: 페이로드 딥링크 메타를 아바타에 저장(P5-E-A 계약: chatId·senderEmail·messageId·tenantId).
+    const meta = {
+        chatId:      msg.chatId,
+        senderEmail: msg.senderEmail,
+        messageId:   msg.messageId,   // 향후 딥링크 B 승격용 (이번엔 미사용)
+        tenantId:    msg.tenantId,
+    };
+    av.deeplinkMeta = meta;
+    const url = buildTeamsDeeplink(meta);   // 식별자 모두 없으면 null → 클릭 비활성
 
     // 기존 말풍선 제거
     if (av.bubbleEl) { av.bubbleEl.remove(); av.bubbleEl = null; }
 
-    const bel = makeBubbleEl(preview);
+    const bel = makeBubbleEl(preview, !!url);
     av.bubbleEl = bel;
+
+    // 딥링크 가능하면 click 리스너 등록 → 새 탭으로 Teams 채팅 오픈.
+    if (url) {
+        bel.addEventListener('click', (event) => {
+            // 카메라 컨트롤(OrbitControls) 전파 차단
+            event.stopPropagation();
+            // 클릭 시점에 최신 메타로 재계산(메시지 갱신 대비)
+            const target = buildTeamsDeeplink(av.deeplinkMeta);
+            if (target) window.open(target, '_blank', 'noopener');
+        });
+    }
 
     // 배지 표시
     av.unreadCount = (av.unreadCount || 0) + 1;
     av.badge.visible = true;
 
-    // 2초 후 말풍선 제거
-    clearTimeout(av.bubbleTimeout);
-    av.bubbleTimeout = setTimeout(() => {
-        if (av.bubbleEl) { av.bubbleEl.remove(); av.bubbleEl = null; }
-    }, 2000);
+    // P5-E-C: 자동 제거 타이머를 헬퍼로 추출 — 초기 시작·hover 이탈 후 재개에서 재사용.
+    const scheduleRemoval = (delay) => {
+        clearTimeout(av.bubbleTimeout);
+        av.bubbleTimeout = setTimeout(() => {
+            if (av.bubbleEl) { av.bubbleEl.remove(); av.bubbleEl = null; }
+        }, delay);
+    };
+
+    // P5-E-C: hover 중에는 자동 제거 타이머를 일시정지하고, 이탈 시 짧은 grace 후 재개.
+    // (B의 시각 강조 onmouseover/onmouseout는 보존하면서 별도 리스너로 타이머만 제어.)
+    bel.addEventListener('mouseenter', () => {
+        clearTimeout(av.bubbleTimeout);
+    });
+    bel.addEventListener('mouseleave', () => {
+        scheduleRemoval(BUBBLE_GRACE_MS);
+    });
+
+    // 6초 후 말풍선 제거 (hover 중이면 일시정지됨)
+    scheduleRemoval(BUBBLE_TTL_MS);
 }
 
 // 애니메이션 루프에서 레이블 위치 갱신 (animate 함수 내에서 호출됨)

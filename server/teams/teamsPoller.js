@@ -27,6 +27,10 @@ const LAST_SEEN_PATH = path.join(__dirname, '..', 'data', 'teams-lastSeen.json')
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const POLL_INTERVAL_MS = 15_000; // 15초
 
+// 딥링크 C(이메일 기반 1:1 채팅) 주입용 테넌트 ID.
+// 모듈 로드 시 1회 읽어 상수화한다 (프론트 하드코딩 금지 — 백엔드가 페이로드로 공급).
+const TENANT_ID = process.env.AZURE_TENANT_ID || '';
+
 // ── LastSeen 영속화 ───────────────────────────────────────────────
 
 function loadLastSeen() {
@@ -180,10 +184,14 @@ async function pollOnce({ getPeople, broadcast, accessToken, lastSeen }) {
                 personId:   matchedPerson.id,
                 personName: matchedPerson.name,
                 message: {
-                    text:      text.slice(0, 200),
+                    text:        text.slice(0, 200),
                     senderName,
-                    timestamp: msg.createdDateTime,
+                    timestamp:   msg.createdDateTime,
                     chatId,
+                    // P5-E-A 딥링크 식별자 보강
+                    senderEmail: matchedPerson.email || '', // 딥링크 C(이메일=UPN) 폴백용. 추가 Graph 호출 불요
+                    messageId:   msg.id,                      // 향후 딥링크 B(특정 메시지) 승격용 — 실어만 둠
+                    tenantId:    TENANT_ID,                   // 딥링크 C tenantId 주입용 (모듈 상수)
                 },
             });
 
@@ -259,4 +267,4 @@ function startPolling({ getPeople, broadcast }) {
     log('폴링 등록 완료 (간격: 15초)');
 }
 
-export { startPolling, graphGet, GRAPH_BASE };
+export { startPolling, pollOnce, graphGet, GRAPH_BASE, TENANT_ID };
