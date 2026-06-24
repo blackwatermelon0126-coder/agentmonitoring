@@ -16,16 +16,49 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TOKEN_PATH = path.join(__dirname, '..', 'data', 'token.json');
+// MSAL 내부 토큰 캐시(리프레시 토큰 포함) 영속 파일 — 서버 재시작 후에도 silent 갱신이 동작하게 한다.
+const CACHE_PATH = path.join(__dirname, '..', 'data', 'msal-cache.json');
 
 // ── MSAL Public Client 설정 ───────────────────────────────────────
 const CLIENT_ID  = process.env.AZURE_CLIENT_ID  || 'c33608da-f7ed-40e5-ab28-c767f08a1d47';
 const TENANT_ID  = process.env.AZURE_TENANT_ID  || '7626d4cb-4eb7-40ae-96db-5fd0b9c7db8f';
+
+/**
+ * MSAL 토큰 캐시 영속화 플러그인.
+ * MSAL은 리프레시 토큰을 내부 캐시에 보관하는데 기본값이 in-memory 라
+ * 프로세스 재시작 시 사라진다 → 매번 device code 재로그인이 필요해진다.
+ * 이 플러그인이 캐시를 data/msal-cache.json 에 직렬화/역직렬화하여
+ * 재시작 후에도 acquireTokenSilent(리프레시 토큰 사용) 갱신이 동작하게 한다.
+ */
+const cachePlugin = {
+    beforeCacheAccess: async (cacheContext) => {
+        try {
+            if (fs.existsSync(CACHE_PATH)) {
+                cacheContext.tokenCache.deserialize(fs.readFileSync(CACHE_PATH, 'utf8'));
+            }
+        } catch {
+            // 손상된 캐시는 무시 — 다음 로그인 때 재생성된다.
+        }
+    },
+    afterCacheAccess: async (cacheContext) => {
+        if (cacheContext.cacheHasChanged) {
+            try {
+                const dir = path.dirname(CACHE_PATH);
+                if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                fs.writeFileSync(CACHE_PATH, cacheContext.tokenCache.serialize(), 'utf8');
+            } catch {
+                // 쓰기 실패는 무해화 — 다음 호출 때 재시도된다.
+            }
+        }
+    },
+};
 
 const msalConfig = {
     auth: {
         clientId:  CLIENT_ID,
         authority: `https://login.microsoftonline.com/${TENANT_ID}`,
     },
+    cache: { cachePlugin },
 };
 
 const pca = new PublicClientApplication(msalConfig);
@@ -150,21 +183,27 @@ async function refreshTokenIfNeeded() {
 
 /**
  * 인증 상태를 확인한다.
- * @returns {{ authenticated: boolean, account: string|null }}
+ * access token이 만료됐어도 영속 캐시의 리프레시 토큰으로 silent 갱신이
+ * 가능하면 authenticated:true 로 보고한다(서버 재시작 직후에도 로그인 유지).
+ * @returns {Promise<{ authenticated: boolean, account: string|null }>}
  */
-function getAuthStatus() {
+async function getAuthStatus() {
     const cached = getTokenFromCache();
     if (!cached) return { authenticated: false, account: null };
 
+    const account = cached.account?.username || cached.account?.name || null;
     const expiresOn = new Date(cached.expiresOn);
-    if (expiresOn <= new Date()) {
-        return { authenticated: false, account: cached.account?.username || null };
+
+    // 아직 유효하면 즉시 true
+    if (expiresOn > new Date()) {
+        return { authenticated: true, account };
     }
 
-    return {
-        authenticated: true,
-        account: cached.account?.username || cached.account?.name || null,
-    };
+    // access token 만료 — 리프레시 토큰으로 silent 갱신 시도 후 재판정
+    await refreshTokenIfNeeded();
+    const fresh = getTokenFromCache();
+    const renewed = !!fresh && new Date(fresh.expiresOn) > new Date();
+    return { authenticated: renewed, account };
 }
 
 export {

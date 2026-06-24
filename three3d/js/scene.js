@@ -1059,15 +1059,24 @@ function createDesk(x, z, idx) {
     return screen;
 }
 
-// 7명 에이전트 전용 책상 (한 줄 배치)
+// 기존 AGENT OFFICE 책상 (한 줄 배치, 컴퓨터 포함) — 중앙 3개만 점유 가능(나머지는 빈 책상 소품)
 let spotIdx = 0;
 const agentDeskLayout = [-6, -4, -2, 0, 2, 4, 6];
+const CLAIMABLE_DESK_X = new Set([-2, 0, 2]);
 for (const x of agentDeskLayout) {
     const z = -1.5;
     createDesk(x, z, spotIdx);
-    allSpots.push({ x, z: z + 0.6, type: 'desk', index: spotIdx, occupied: false });
+    if (CLAIMABLE_DESK_X.has(x)) {
+        // 점유 가능한 컴퓨터 책상 — 에이전트가 빈자리를 찾아 앉는다. screenIdx로 모니터 글로우 매핑.
+        allSpots.push({ x, z: z + 0.6, y: 0, type: 'desk', screenIdx: spotIdx, occupied: false });
+    }
     spotIdx++;
 }
+
+// FLLABS 2F OFFICE 빌딩 1층 컴퓨터 책상 2개도 점유 풀에 추가 (지상층 — 이동 단순).
+// 위치는 위 o2Desk(-2,1)·o2Desk(1,1)와 일치. screenIdx 없음(별도 책상이라 글로우 미적용).
+allSpots.push({ x: OFFICE2.x - 2, z: OFFICE2.z + 0.6, y: 0, type: 'desk', screenIdx: null, occupied: false });
+allSpots.push({ x: OFFICE2.x + 1, z: OFFICE2.z + 0.6, y: 0, type: 'desk', screenIdx: null, occupied: false });
 
 // 서버랙
 const rack = new THREE.Group();
@@ -1427,23 +1436,19 @@ function createFixedAgents() {
         traits.shirtColor = def.color;
         const person = createPerson(traits);
 
-        if (def.role === 'leader') {
-            person.group.position.set(POOL.x, 0.05, POOL.z);
-            person.group.visible = true;
-        } else {
-            person.group.position.set(ENTRANCE_POS.x + rand(-0.6, 0.6), 0, ENTRANCE_POS.z);
-            person.group.visible = false;
-        }
+        // 모든 에이전트(leader 포함)는 입구에서 대기하다, 활동 발생 시
+        // 빈 컴퓨터 책상을 찾아 출근(claimDesk → walk-in → 착석)한다.
+        person.group.position.set(ENTRANCE_POS.x + rand(-0.6, 0.6), 0, ENTRANCE_POS.z);
+        person.group.visible = false;
         scene.add(person.group);
 
         const labelObj = makeNameLabel(def.name, def.color, 100);
         labelObj.sprite.position.set(0, 2.3, 0);
         person.group.add(labelObj.sprite);
 
-        const desk = allSpots[def.deskIdx];
         fixedAgents[def.role] = {
-            def, person, desk,
-            phase: def.role === 'leader' ? 'swimming' : 'away',
+            def, person, desk: null,
+            phase: 'away',
             walkTime: 0, swimT: Math.random() * 10,
             isWorking: false, labelObj: labelObj,
             stamina: 100, exp: 0
@@ -1565,17 +1570,35 @@ const LEISURE_SPOTS = [
 
 function pickLeisureSpot() { return pick(LEISURE_SPOTS); }
 
+// 빈 컴퓨터 책상을 동적으로 배정한다.
+// 이미 자리가 있으면 유지하고, 없으면 현재 위치에서 가장 가까운 비어 있는 책상을 점유한다.
+// (에이전트는 한 번 자리를 잡으면 휴식 중에도 그 자리를 유지 — 다른 에이전트와 겹치지 않음)
+function claimDesk(a) {
+    if (a.desk) return a.desk;
+    const px = a.person.group.position.x;
+    const pz = a.person.group.position.z;
+    let best = null, bestD = Infinity;
+    for (const s of allSpots) {
+        if (s.occupied) continue;
+        const d = (s.x - px) ** 2 + (s.z - pz) ** 2;
+        if (d < bestD) { bestD = d; best = s; }
+    }
+    if (best) { best.occupied = true; a.desk = best; }
+    return a.desk;
+}
+
 function startWorking(role) {
     const a = fixedAgents[role];
     if (!a) return;
     a.isWorking = true;
     a.idleStartedAt = 0;
     a.lastActiveAt = Date.now();
-    
+
     // 느낌표(퀘스트 알림) 플로팅 텍스트 발동
     addFloatingText('❗', a.person.group.position, '#FF0000', 60);
 
-    if (role === 'leader') return; // 사장님은 항상 풀에서 수영
+    // 빈 컴퓨터 책상 배정 (없으면 가장 가까운 빈자리)
+    claimDesk(a);
 
     if (a.phase === 'away') {
         a.person.group.visible = true;
@@ -1588,8 +1611,8 @@ function startWorking(role) {
         a.target = null;
         a.walkTime = 0;
     }
-    if (deskScreens[a.def.deskIdx]) {
-        deskScreens[a.def.deskIdx].material.color.setHex(0x004400);
+    if (a.desk?.screenIdx != null && deskScreens[a.desk.screenIdx]) {
+        deskScreens[a.desk.screenIdx].material.color.setHex(0x004400);
     }
 }
 
@@ -1604,27 +1627,28 @@ function stopWorking(role) {
     a.exp += expGain;
     addFloatingText(`+${expGain} EXP`, a.person.group.position, '#00FFFF', 40);
 
-    if (a.phase === 'sitting' && deskScreens[a.def.deskIdx]) {
-        deskScreens[a.def.deskIdx].material.color.setHex(0x002a14);
+    if (a.phase === 'sitting' && a.desk?.screenIdx != null && deskScreens[a.desk.screenIdx]) {
+        deskScreens[a.desk.screenIdx].material.color.setHex(0x002a14);
     }
 }
 
 function goLeisure(role) {
     const a = fixedAgents[role];
-    if (!a || role === 'leader') return;
+    if (!a) return;
     a.phase = 'leisure-walking';
     a.target = pickLeisureSpot();
     a.walkTime = 0;
     a.leisureStartedAt = 0;
     if (a.person.group.position.y < 0) setSitting(a.person, false);
-    if (deskScreens[a.def.deskIdx]) {
-        deskScreens[a.def.deskIdx].material.color.setHex(0x0a0a1a);
+    if (a.desk?.screenIdx != null && deskScreens[a.desk.screenIdx]) {
+        deskScreens[a.desk.screenIdx].material.color.setHex(0x0a0a1a);
     }
 }
 
 function returnToDesk(role) {
     const a = fixedAgents[role];
-    if (!a || role === 'leader') return;
+    if (!a) return;
+    claimDesk(a); // 자리가 없으면 빈 책상 배정
     if (a.person.group.position.y < 0) setSitting(a.person, false);
     a.phase = 'walking-in';
     a.target = null;
@@ -1863,7 +1887,7 @@ function animate() {
     Object.values(fixedAgents).forEach(a => {
         a.walkTime += delta;
         const c = a.person;
-        const desk = a.desk;
+        let desk = a.desk;
 
         // idle이 일정 시간 지속되면 휴식 장소로 이동
         if (a.phase === 'sitting' && !a.isWorking && a.idleStartedAt) {
@@ -1906,6 +1930,8 @@ function animate() {
             return;
         }
         if (a.phase === 'walking-in' || a.phase === 'leisure-walking') {
+            if (a.phase === 'walking-in' && !desk) desk = claimDesk(a);
+            if (a.phase === 'walking-in' && !desk) return; // 빈 책상 없음 — 이 프레임 대기
             const tgtX = a.phase === 'walking-in' ? desk.x : a.target.x;
             const tgtZ = a.phase === 'walking-in' ? desk.z : a.target.z;
             const dx = tgtX - c.group.position.x;
@@ -2016,9 +2042,9 @@ function animate() {
                 c.armR.rotation.x = -0.4 + Math.sin(a.walkTime * workSpeed * 4 + 1) * 0.15;
                 c.headGroup.rotation.x = Math.sin(a.walkTime * 2.5) * 0.04;
                 
-                if (deskScreens[a.def.deskIdx]) {
+                if (a.desk?.screenIdx != null && deskScreens[a.desk.screenIdx]) {
                     const b = 0.18 + Math.sin(a.walkTime * 5) * 0.08;
-                    deskScreens[a.def.deskIdx].material.color.setRGB(0, b, 0.05);
+                    deskScreens[a.desk.screenIdx].material.color.setRGB(0, b, 0.05);
                 }
                 
                 // 스태미나가 다 떨어지면 강제 휴식 유도 (또는 매우 느린 애니메이션)
@@ -2142,41 +2168,63 @@ function makePersonLabel(name, color) {
  *         (딥링크 불가 말풍선에는 힌트·강조 없음 — graceful 보존.)
  */
 function makeBubbleEl(text, clickable = false) {
+    // 편지봉투 bob 애니메이션 키프레임 1회 주입
+    if (!document.getElementById('env-bob-style')) {
+        const st = document.createElement('style');
+        st.id = 'env-bob-style';
+        st.textContent = '@keyframes envBob{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}';
+        document.head.appendChild(st);
+    }
+
     const el = document.createElement('div');
     el.style.cssText = `
         position: absolute; pointer-events: ${clickable ? 'auto' : 'none'};
         cursor: ${clickable ? 'pointer' : 'default'};
-        background: #ffffffee; color: #222; border-radius: 8px;
-        padding: 4px 8px; font-size: 10px; font-family: monospace;
-        white-space: nowrap; transform: translateX(-50%);
-        border: 1px solid #aaa; max-width: 200px; overflow: hidden;
-        text-overflow: ellipsis;
-        transition: box-shadow 0.12s, border-color 0.12s;
+        transform: translateX(-50%);
+        display: flex; flex-direction: column; align-items: center;
+        font-family: sans-serif; user-select: none;
+        transition: transform 0.12s;
     `;
-    // 미리보기 텍스트는 별도 span에 담아 힌트 라벨과 분리(힌트가 텍스트를 덮어쓰지 않도록).
-    const textEl = document.createElement('span');
-    textEl.textContent = text;
-    el.appendChild(textEl);
+
+    // 큰 편지봉투 아이콘 — 메시지 수신 표시(눈에 잘 띄게 크게 + bob)
+    const icon = document.createElement('div');
+    icon.textContent = '✉️';
+    icon.style.cssText = `
+        font-size: 46px; line-height: 1;
+        filter: drop-shadow(0 3px 5px rgba(0,0,0,0.55));
+        animation: envBob 1.1s ease-in-out infinite;
+    `;
+    el.appendChild(icon);
+
+    // 발신자 + 미리보기 캡션
+    const cap = document.createElement('div');
+    cap.textContent = text;
+    cap.style.cssText = `
+        margin-top: 3px; max-width: 240px; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; font-size: 11px; font-family: monospace;
+        background: #ffffffee; color: #222; border-radius: 6px; padding: 2px 7px;
+        border: 1px solid #aaa;
+    `;
+    el.appendChild(cap);
 
     if (clickable) {
-        // P5-E-C: 클릭 힌트 라벨 — 평소 숨김, hover 시 노출.
-        const hintEl = document.createElement('span');
-        hintEl.textContent = '💬 Teams로 열기';
+        // 클릭 힌트 — 평소 숨김, hover 시 노출.
+        const hintEl = document.createElement('div');
+        hintEl.textContent = '✉ 클릭 → Teams 열기';
         hintEl.style.cssText = `
-            display: none; margin-left: 6px; color: #4A90E2;
-            font-weight: bold; font-size: 9px;
+            display: none; margin-top: 3px; color: #fff; background: #4A90E2;
+            font-weight: bold; font-size: 10px; border-radius: 5px; padding: 2px 6px;
+            white-space: nowrap;
         `;
         el.appendChild(hintEl);
 
-        // hover 시 시각 강조(테두리·그림자) + 클릭 힌트 노출
+        // hover 시 확대 + 클릭 힌트 노출
         el.onmouseover = () => {
-            el.style.borderColor = '#4A90E2';
-            el.style.boxShadow = '0 2px 8px rgba(74,144,226,0.5)';
-            hintEl.style.display = 'inline';
+            el.style.transform = 'translateX(-50%) scale(1.18)';
+            hintEl.style.display = 'block';
         };
         el.onmouseout = () => {
-            el.style.borderColor = '#aaa';
-            el.style.boxShadow = 'none';
+            el.style.transform = 'translateX(-50%) scale(1.0)';
             hintEl.style.display = 'none';
         };
     }
@@ -2318,7 +2366,7 @@ function syncPersonAvatars(people) {
 // P5-E-C: 말풍선 표시 정책 상수.
 // 기본 표시 시간 6초(설계서 §10 — 클릭 기회 확보를 위해 2초→6초 연장).
 // hover로 일시정지된 타이머는 마우스 이탈 후 짧은 grace(1.5초) 뒤 재개한다.
-const BUBBLE_TTL_MS = 6000;
+const BUBBLE_TTL_MS = 10000;
 const BUBBLE_GRACE_MS = 1500;
 
 /**

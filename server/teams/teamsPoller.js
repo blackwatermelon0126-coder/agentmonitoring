@@ -64,7 +64,7 @@ async function graphGet(url, accessToken) {
 
 // ── 폴링 1 사이클 ─────────────────────────────────────────────────
 
-async function pollOnce({ getPeople, broadcast, accessToken, lastSeen }) {
+async function pollOnce({ getPeople, broadcast, accessToken, lastSeen, freshnessMs = 90_000 }) {
     // 1. 내 채팅 목록 조회 (참여자 포함)
     const chatsData = await graphGet(
         `${GRAPH_BASE}/me/chats?$expand=members&$top=50`,
@@ -132,13 +132,13 @@ async function pollOnce({ getPeople, broadcast, accessToken, lastSeen }) {
     for (const chat of chats) {
         const members = chat.members || [];
 
-        // 채팅 참여자 중 people.json에 등록된 사람 찾기 (email → userId → UPN 폴백)
-        const matchedPerson = members.reduce((found, member) => {
-            if (found) return found;
-            return matchMemberToPerson(member);
-        }, null);
-
-        if (!matchedPerson) continue;
+        // 채팅 참여자 중 people.json에 등록된 사람을 전부 수집한다 (member ↔ person).
+        const registered = [];
+        for (const member of members) {
+            const person = matchMemberToPerson(member);
+            if (person) registered.push({ member, person });
+        }
+        if (registered.length === 0) continue;
 
         const chatId = chat.id;
 
@@ -170,6 +170,13 @@ async function pollOnce({ getPeople, broadcast, accessToken, lastSeen }) {
             // 시스템 메시지 제외
             if (msg.messageType && msg.messageType !== 'message') continue;
 
+            // 과거 메시지(앱 시작 전·오래된 이력)는 알림하지 않고 lastSeen만 전진시킨다.
+            // → 신규 인물 등록·서버 재시작 시 과거 메시지가 편지봉투로 폭주하는 것을 방지.
+            if (Date.now() - msgAt.getTime() > freshnessMs) {
+                if (msgAt > latestAt) latestAt = msgAt;
+                continue;
+            }
+
             // 신규 메시지 — broadcast
             const text = msg.body.plainTextContent
                 || msg.body.content?.replace(/<[^>]*>/g, '') // HTML 태그 제거
@@ -178,22 +185,31 @@ async function pollOnce({ getPeople, broadcast, accessToken, lastSeen }) {
             const senderName = msg.from?.user?.displayName
                 || msg.from?.application?.displayName
                 || '알 수 없음';
+            const senderId = (msg.from?.user?.id || '').toLowerCase();
 
-            broadcast({
-                type:       'teams-notification',
-                personId:   matchedPerson.id,
-                personName: matchedPerson.name,
-                message: {
-                    text:        text.slice(0, 200),
-                    senderName,
-                    timestamp:   msg.createdDateTime,
-                    chatId,
-                    // P5-E-A 딥링크 식별자 보강
-                    senderEmail: matchedPerson.email || '', // 딥링크 C(이메일=UPN) 폴백용. 추가 Graph 호출 불요
-                    messageId:   msg.id,                      // 향후 딥링크 B(특정 메시지) 승격용 — 실어만 둠
-                    tenantId:    TENANT_ID,                   // 딥링크 C tenantId 주입용 (모듈 상수)
-                },
-            });
+            // 알림은 '받는 사람' 머리 위에 띄운다 → 등록 멤버 중 발신자가 아닌 사람(수신자)에게 broadcast.
+            // (발신자 id를 알 수 없으면 등록 멤버 전원에게 표시 — 폴백)
+            const receivers = registered.filter(r =>
+                !senderId || (r.member.userId || '').toLowerCase() !== senderId
+            );
+
+            for (const r of receivers) {
+                broadcast({
+                    type:       'teams-notification',
+                    personId:   r.person.id,
+                    personName: r.person.name,
+                    message: {
+                        text:        text.slice(0, 200),
+                        senderName,
+                        timestamp:   msg.createdDateTime,
+                        chatId,
+                        // P5-E-A 딥링크 식별자 보강
+                        senderEmail: r.person.email || '', // 딥링크 C(이메일=UPN) 폴백용. 추가 Graph 호출 불요
+                        messageId:   msg.id,                      // 향후 딥링크 B(특정 메시지) 승격용 — 실어만 둠
+                        tenantId:    TENANT_ID,                   // 딥링크 C tenantId 주입용 (모듈 상수)
+                    },
+                });
+            }
 
             if (msgAt > latestAt) latestAt = msgAt;
         }

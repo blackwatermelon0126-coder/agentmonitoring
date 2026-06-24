@@ -1,3 +1,4 @@
+import './loadEnv.js'; // ⚠ 최우선 — 다른 모듈이 process.env(AZURE_* 등)를 읽기 전에 .env 로드
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import http from 'http';
@@ -383,8 +384,8 @@ app.get('/auth/start', async (req, res) => {
  * 현재 인증 상태를 반환한다.
  * 반환: { authenticated: boolean, account: string|null }
  */
-app.get('/auth/status', (req, res) => {
-    const status = getAuthStatus();
+app.get('/auth/status', async (req, res) => {
+    const status = await getAuthStatus();
     res.json(status);
 });
 

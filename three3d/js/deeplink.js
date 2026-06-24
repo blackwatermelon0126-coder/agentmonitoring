@@ -10,6 +10,9 @@
 // 설계서 §2.2 스킴 선택 로직을 그대로 구현한다.
 
 const TEAMS_BASE = 'https://teams.microsoft.com/l/chat';
+// 웹앱 직행 경로(_# SPA 라우트). 런처 링크(l/)와 달리 msteams: 프로토콜을 호출하지 않으므로
+// "데스크톱 앱에서 열기?" 프롬프트 없이 브라우저(Teams 웹)에서 바로 채팅이 열린다.
+const TEAMS_WEB_BASE = 'https://teams.microsoft.com/_#/conversations';
 
 /**
  * 딥링크 메타로부터 Teams 채팅 딥링크 URL을 생성한다.
@@ -25,10 +28,10 @@ const TEAMS_BASE = 'https://teams.microsoft.com/l/chat';
 export function buildTeamsDeeplink(meta) {
     if (!meta) return null;
 
-    // A: 기존 대화로 직접 이동 — chatId 형식 `19:...@thread.v2` 경로 세그먼트.
-    // 경로에 `:`·`@`·`.`가 포함되어 일관성을 위해 encodeURIComponent 적용(Teams 라우터가 해석).
+    // A: 기존 대화로 직접 이동 — 웹앱 직행 경로(_#) 사용 → 데스크톱 앱 실행 프롬프트 없이 웹으로 열린다.
+    // chatId 형식 `19:...@thread.v2` 의 `:`·`@` 를 encodeURIComponent 로 인코딩한다.
     if (meta.chatId) {
-        return `${TEAMS_BASE}/${encodeURIComponent(meta.chatId)}/conversations`;
+        return `${TEAMS_WEB_BASE}/${encodeURIComponent(meta.chatId)}?ctx=chat`;
     }
 
     // C: 이메일(UPN)로 1:1 채팅 열기/생성. users=는 UPN(이메일)만 허용.

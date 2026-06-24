@@ -18,10 +18,10 @@ import { describe, it, expect } from 'vitest';
 import { buildTeamsDeeplink } from '../../three3d/js/deeplink.js';
 
 describe('buildTeamsDeeplink (A: chatId 1순위)', () => {
-    it('chatId 있으면 /l/chat/<chatId>/conversations 반환', () => {
+    it('chatId 있으면 웹앱 직행 경로(_#/conversations/<chatId>?ctx=chat) 반환', () => {
         const url = buildTeamsDeeplink({ chatId: '19:abc@thread.v2' });
         expect(url).toBe(
-            'https://teams.microsoft.com/l/chat/19%3Aabc%40thread.v2/conversations',
+            'https://teams.microsoft.com/_#/conversations/19%3Aabc%40thread.v2?ctx=chat',
         );
     });
 
@@ -31,7 +31,7 @@ describe('buildTeamsDeeplink (A: chatId 1순위)', () => {
             senderEmail: 'hong@formationlabs.co.kr',
             tenantId: '7626d4cb-4eb7-40ae-96db-5fd0b9c7db8f',
         });
-        expect(url).toContain('/l/chat/19%3Axyz%40thread.v2/conversations');
+        expect(url).toContain('/_#/conversations/19%3Axyz%40thread.v2?ctx=chat');
         expect(url).not.toContain('users=');
     });
 
@@ -39,7 +39,7 @@ describe('buildTeamsDeeplink (A: chatId 1순위)', () => {
         const url = buildTeamsDeeplink({ chatId: '19:meeting_id@unq.gbl.spaces' });
         // `:` → %3A, `@` → %40 (점은 인코딩 비대상)
         expect(url).toBe(
-            'https://teams.microsoft.com/l/chat/19%3Ameeting_id%40unq.gbl.spaces/conversations',
+            'https://teams.microsoft.com/_#/conversations/19%3Ameeting_id%40unq.gbl.spaces?ctx=chat',
         );
     });
 });
