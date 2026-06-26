@@ -1,12 +1,12 @@
 /**
- * lunchgame.js — 점심 게임 시스템 (P7)
+ * lunchgame.js — 간식 내기 게임 시스템 (P7)
  *
  * 게임 3종:
- *   🔫 러시안 룰렛   — 6발 탄창, 1발 실탄, 생존자 결정
- *   🪜 사다리 타기   — 운명의 사다리, 오늘 당번 배정
- *   ✂️ 가위바위보    — 토너먼트 브래킷, 최후의 승자
+ *   🔫 러시안 룰렛   — 6발 탄창, 실탄 맞은 사람이 간식 사러 감
+ *   🪜 사다리 타기   — 운명의 사다리, 간식 당번 결정
+ *   ✂️ 가위바위보    — 토너먼트, 최후 패배자가 간식 심부름
  *
- * 12:30 자동 트리거 또는 G 키 수동 실행.
+ * 12:00 · 18:00 자동 트리거 (하루 2회, 당일 한 번씩) 또는 G 키 수동 실행.
  * 참가자: people.json 등록 인물 우선, 없으면 5역할 에이전트 폴백.
  */
 
@@ -22,7 +22,7 @@ export function initLunchGame({ getPeople, addFloatingText }) {
     _floatText    = addFloatingText || (() => {});
 }
 
-/** 12:30 또는 G키에서 호출 */
+/** 12:00 · 18:00 또는 G키에서 호출 */
 export function triggerLunchGame() {
     if (_gameActive) return;
     const people = _getPeople();
@@ -114,9 +114,11 @@ function _showMenu(participants) {
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
 
+    const snackLabel = now.getHours() < 15 ? '점심 간식' : '저녁 간식';
     const header = $el('div', `text-align:center;margin-bottom:28px;`, `
-        <div style="font-size:52px;margin-bottom:6px;">🍱</div>
-        <div style="font-size:30px;font-weight:bold;color:#fff;letter-spacing:2px;">점심 게임 타임</div>
+        <div style="font-size:52px;margin-bottom:6px;">🍿</div>
+        <div style="font-size:30px;font-weight:bold;color:#fff;letter-spacing:2px;">간식 내기!</div>
+        <div style="font-size:14px;color:#f39c12;margin-top:4px;font-weight:bold;">${snackLabel} 사러 갈 사람 결정</div>
         <div style="font-size:13px;color:#666;margin-top:6px;">${timeStr} · 참가자 ${participants.length}명</div>
         <div style="margin-top:10px;color:#aaa;font-size:13px;">${participants.map(_chip).join('')}</div>
     `);
@@ -127,17 +129,17 @@ function _showMenu(participants) {
     [
         {
             id: 'roulette', emoji: '🔫', name: '러시안 룰렛',
-            desc: '6발 탄창에 실탄 1발\n방아쇠를 당겨라\n생존자가 오늘의 주인공',
+            desc: '6발 탄창에 실탄 1발\n탕! 맞은 사람이\n간식 사러 간다!',
             color: '#e74c3c', bg: '#1a0505',
         },
         {
             id: 'ladder', emoji: '🪜', name: '사다리 타기',
-            desc: '운명의 사다리\n오늘 커피 당번은?\n공정한 추첨으로 결정',
+            desc: '운명의 사다리\n간식 당번·음료 내기\n공정한 추첨으로 결정',
             color: '#3498db', bg: '#05101a',
         },
         {
             id: 'rps', emoji: '✂️', name: '가위바위보',
-            desc: '토너먼트 브래킷\n최후의 1인을 가려라\n정정당당한 승부',
+            desc: '토너먼트 브래킷\n최후 패배자가\n간식 심부름 담당!',
             color: '#2ecc71', bg: '#051a0a',
         },
     ].forEach(g => {
@@ -189,7 +191,7 @@ async function _startRoulette(participants) {
     const title = $el('div', `
         font-size:22px;font-weight:bold;color:#e74c3c;font-family:monospace;
         letter-spacing:2px;margin-bottom:20px;text-align:center;
-    `, `🔫 러시안 룰렛 — ${players.length}인 생존전`);
+    `, `🔫 러시안 룰렛 — ${players.length}인 간식 내기`);
     o.appendChild(title);
 
     // 탄창 상태
@@ -315,7 +317,7 @@ async function _startRoulette(participants) {
                 <div style="font-size:28px;margin-bottom:6px;animation:lgShake .4s;">💀</div>
                 <div style="font-size:12px;color:#555;font-weight:bold;">${current.name}</div>
             `;
-            setMsg(`<span style="color:#e74c3c;font-size:18px;">💥 BANG!</span> <span style="color:#aaa">${current.name} 탈락!</span>`);
+            setMsg(`<span style="color:#e74c3c;font-size:18px;">💥 탕!</span> <span style="color:#aaa">${current.name} 탈락! 간식 면제~</span>`);
             await _wait(1200);
 
             const idx = alive.indexOf(current);
@@ -354,14 +356,15 @@ async function _startRoulette(participants) {
     function endGame(winner) {
         btn.disabled = true;
         const wCard = playerEls[winner.id];
-        wCard.style.border = `2px solid gold`;
-        wCard.style.boxShadow = `0 0 30px gold`;
+        wCard.style.border = `2px solid #f39c12`;
+        wCard.style.boxShadow = `0 0 30px #f39c1299`;
         wCard.innerHTML = `
-            <div style="font-size:32px;margin-bottom:6px;animation:lgBounce .7s infinite;">🏆</div>
-            <div style="font-size:13px;color:gold;font-weight:bold;">${winner.name}</div>
+            <div style="font-size:32px;margin-bottom:6px;animation:lgBounce .7s infinite;">🍿</div>
+            <div style="font-size:13px;color:#f39c12;font-weight:bold;">${winner.name}</div>
+            <div style="font-size:10px;color:#aaa;margin-top:3px;">간식 당번!</div>
         `;
-        setMsg(`<span style="color:gold;font-size:18px;">🏆 최후의 생존자: ${winner.name}!</span>`);
-        _floatText && _floatText(`🏆 ${winner.name}`, '#FFD700');
+        setMsg(`<span style="color:#f39c12;font-size:18px;">🍿 ${winner.name}님 간식 사러 가세요~! 화이팅!</span>`);
+        _floatText && _floatText(`🍿 ${winner.name} 간식 심부름`, '#F39C12');
 
         const closeBtn2 = $el('button', `
             background:#333;color:#aaa;border:none;border-radius:8px;
@@ -383,9 +386,9 @@ async function _startRoulette(participants) {
 // ══════════════════════════════════════════════════════════
 
 const LADDER_PRIZES = [
-    '☕ 커피 당번', '🍜 점심 쏘기', '🏆 오늘의 MVP',
-    '📎 회의록 작성', '🎁 행운의 선물', '😇 심부름꾼',
-    '🍰 케이크 주문', '📣 공지 전달자',
+    '🍿 간식 사러 가기', '☕ 커피 사오기', '🧃 음료 당번',
+    '🍦 아이스크림 쏘기', '🛒 편의점 심부름', '🍰 케이크 사오기',
+    '🍜 라면 사오기', '🎉 이번 한 번 면제!',
 ];
 
 async function _startLadder(participants) {
@@ -399,7 +402,7 @@ async function _startLadder(participants) {
     const title = $el('div', `
         font-size:22px;font-weight:bold;color:#3498db;font-family:monospace;
         letter-spacing:2px;margin-bottom:16px;text-align:center;
-    `, `🪜 사다리 타기 — ${n}인`);
+    `, `🪜 사다리 타기 — ${n}인 간식 내기`);
     o.appendChild(title);
 
     // Canvas
@@ -548,7 +551,13 @@ async function _startLadder(participants) {
                     `${players[pi].name} → ${prizes[end]}`
                 ).join(' | ');
                 msgEl.innerHTML = `<span style="color:#3498db">${resultLines}</span>`;
-                _floatText && _floatText('🪜 결과 공개!', '#3498db');
+                // 간식 사러 가는 사람 강조
+                const snackPerson = paths.reduce((acc, { end }, pi) => {
+                    const pr = prizes[end];
+                    if (pr.includes('면제')) return acc;
+                    return acc || players[pi].name;
+                }, null);
+                _floatText && _floatText(snackPerson ? `🍿 ${snackPerson} 간식 당번!` : '🪜 결과 공개!', '#3498db');
 
                 const closeBtn2 = $el('button', `
                     background:#333;color:#aaa;border:none;border-radius:8px;
@@ -603,7 +612,7 @@ async function _startRPS(participants) {
     const title = $el('div', `
         font-size:22px;font-weight:bold;color:#2ecc71;font-family:monospace;
         letter-spacing:2px;margin-bottom:16px;text-align:center;
-    `, `✂️ 가위바위보 토너먼트 — ${players.length}강`);
+    `, `✂️ 가위바위보 — ${players.length}강 간식 내기`);
     o.appendChild(title);
 
     const bracket = _buildBracket(players);
@@ -765,10 +774,18 @@ async function _startRPS(participants) {
                     return [wa || null, wb || null];
                 });
             } else {
-                // 우승자
+                // 결승 — champion=우승자, finalLoser=결승 패배자(간식 당번)
                 const champion = roundWinners[0];
-                msgEl.innerHTML = `<span style="color:gold;font-size:18px;">🏆 ${champion.name} 우승! 최후의 승자!</span>`;
-                _floatText && _floatText(`✂️ ${champion.name} 우승!`, '#2ecc71');
+                const finalMatch = bracket[ri][0];
+                const finalLoser = (finalMatch[0] && finalMatch[0].id !== champion.id) ? finalMatch[0]
+                                 : (finalMatch[1] && finalMatch[1].id !== champion.id) ? finalMatch[1]
+                                 : null;
+                const snackPerson = finalLoser || champion;
+                msgEl.innerHTML = `
+                    <span style="color:#aaa;font-size:13px;">🏆 ${champion.name} 우승!</span><br>
+                    <span style="color:#f39c12;font-size:18px;font-weight:bold;">🍿 ${snackPerson.name}님이 간식 사러 가세요!</span>
+                `;
+                _floatText && _floatText(`🍿 ${snackPerson.name} 간식 심부름`, '#F39C12');
                 const closeBtn2 = $el('button', `
                     background:#333;color:#aaa;border:none;border-radius:8px;
                     padding:8px 24px;font-size:13px;cursor:pointer;

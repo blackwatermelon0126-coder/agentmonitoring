@@ -3324,16 +3324,17 @@ initLunchGame({
     addFloatingText: (text, color) => addFloatingText(text, new THREE.Vector3(0, 6, -5), color, 48),
 });
 
-// 12:30 자동 트리거 (분당 1회 체크)
-let _lgLastMinute = -1;
+// 간식 내기 자동 트리거 — 12:00 (점심) · 18:00 (저녁) 하루 2회, 당일 각 1회만
+const _lgFired = new Set(); // "YYYYMMDD_HHMM" 형태로 당일 발화 기록
 setInterval(() => {
     const now = new Date();
     const hm = now.getHours() * 100 + now.getMinutes();
-    if (hm === 1230 && _lgLastMinute !== now.getDate() * 10000 + 1230) {
-        _lgLastMinute = now.getDate() * 10000 + 1230;
-        triggerLunchGame();
-    }
-}, 30000);
+    if (hm !== 1200 && hm !== 1800) return;
+    const key = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${hm}`;
+    if (_lgFired.has(key)) return;
+    _lgFired.add(key);
+    triggerLunchGame();
+}, 20000);
 
 // 초기 사람 목록 fetch
 fetch('http://localhost:3300/api/people')
