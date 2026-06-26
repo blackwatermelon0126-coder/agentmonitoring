@@ -2660,6 +2660,22 @@ function worldToScreen(worldPos) {
     buildOkinawa(16, 5);
 }
 
+// P6: 리조트 회의 테이블 좌석 — makeMeetingTable seatR = radius + 0.8 공식과 일치.
+// Boracay(cx=16,cz=18,seats=5,seatR=1.8), Guam(cx=1,cz=10,seats=6,seatR=1.8), Okinawa(cx=16,cz=5,seats=4,seatR=1.7)
+function _resortSeats(cx, cz, count, seatR) {
+    const arr = [];
+    for (let i = 0; i < count; i++) {
+        const ang = (i / count) * Math.PI * 2;
+        arr.push({ x: cx + Math.cos(ang) * seatR, z: cz + Math.sin(ang) * seatR, occupied: false });
+    }
+    return arr;
+}
+const meetingSeats = [
+    ..._resortSeats(16, 18, 5, 1.8), // Boracay
+    ..._resortSeats(1,  10, 6, 1.8), // Guam
+    ..._resortSeats(16,  5, 4, 1.7), // Okinawa
+];
+
 // P5-D: 2D 캔버스 좌표(px) ↔ 3D 씬 좌표 변환 규약 (단일 진실).
 // 2D 캔버스는 800×600, 중앙(400,300) 기준. 2D x → 3D x, 2D y → 3D z (바닥 평면).
 // createPersonAvatar(읽기)와 3D 드래그 영속화(쓰기)가 동일한 규약을 공유해 왕복 일관성을 보장한다.
@@ -2736,7 +2752,8 @@ function createPersonAvatar(person) {
     // HTML 레이블
     const labelEl = makePersonLabel(person.name, person.color || '#4A90E2');
 
-    personAvatarMap.set(person.id, { group, personObj, pickMeshes, badge, labelEl, bubbleEl: null, unreadCount: 0 });
+    personAvatarMap.set(person.id, { group, personObj, pickMeshes, badge, labelEl, bubbleEl: null, unreadCount: 0,
+        meetingEl: null, preMeetingPos: null, meetingSeatIdx: -1, meetingJoinUrl: null });
 }
 
 /**
@@ -2753,6 +2770,10 @@ function syncPersonAvatars(people) {
             scene.remove(av.group);
             av.labelEl.remove();
             if (av.bubbleEl) av.bubbleEl.remove();
+            if (av.meetingEl) { av.meetingEl.remove(); }
+            if (av.meetingSeatIdx >= 0 && meetingSeats[av.meetingSeatIdx]) {
+                meetingSeats[av.meetingSeatIdx].occupied = false;
+            }
             personAvatarMap.delete(id);
         }
     }
@@ -2840,6 +2861,77 @@ function showTeamsNotification3D(data) {
     scheduleRemoval(BUBBLE_TTL_MS);
 }
 
+// P6: 화상회의 중 아바타 위에 표시할 📹 인디케이터 DOM 생성
+function makeMeetingIndicatorEl(joinUrl) {
+    const el = document.createElement('div');
+    el.style.cssText = `
+        position: absolute; transform: translateX(-50%);
+        display: flex; flex-direction: column; align-items: center;
+        font-family: sans-serif; user-select: none;
+        ${joinUrl ? 'pointer-events: auto; cursor: pointer;' : 'pointer-events: none; cursor: default;'}
+    `;
+    const icon = document.createElement('div');
+    icon.textContent = '📹';
+    icon.style.cssText = `font-size: 32px; line-height: 1; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.55));`;
+    el.appendChild(icon);
+    if (joinUrl) {
+        const hint = document.createElement('div');
+        hint.textContent = '클릭 → 회의 참여';
+        hint.style.cssText = `
+            margin-top: 2px; font-size: 10px; font-family: monospace;
+            background: #00897B; color: #fff; border-radius: 4px; padding: 1px 5px;
+            white-space: nowrap;
+        `;
+        el.appendChild(hint);
+    }
+    document.body.appendChild(el);
+    return el;
+}
+
+/**
+ * P6: Teams 화상회의 상태 수신 → 아바타를 리조트 회의 테이블로 이동/복귀
+ *
+ * inMeeting=true  → meetingSeats에서 빈 자리 할당, 아바타 텔레포트, 📹 인디케이터 표시
+ * inMeeting=false → 원래 위치 복귀, 좌석 해제, 인디케이터 제거
+ */
+function handleMeetingStatus(data) {
+    const av = personAvatarMap.get(data.personId);
+    if (!av) return;
+
+    if (data.inMeeting) {
+        const seat = meetingSeats.find(s => !s.occupied);
+        if (!seat) return; // 전체 좌석 만석
+
+        av.preMeetingPos = av.group.position.clone();
+        av.meetingSeatIdx = meetingSeats.indexOf(seat);
+        seat.occupied = true;
+
+        av.group.position.set(seat.x, PERSON_GROUND_Y, seat.z);
+
+        if (av.meetingEl) av.meetingEl.remove();
+        const el = makeMeetingIndicatorEl(data.joinUrl || null);
+        if (data.joinUrl) {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                window.open(data.joinUrl, '_blank', 'noopener');
+            });
+        }
+        av.meetingEl = el;
+        av.meetingJoinUrl = data.joinUrl || null;
+    } else {
+        if (av.preMeetingPos) {
+            av.group.position.copy(av.preMeetingPos);
+            av.preMeetingPos = null;
+        }
+        if (av.meetingSeatIdx >= 0 && meetingSeats[av.meetingSeatIdx]) {
+            meetingSeats[av.meetingSeatIdx].occupied = false;
+            av.meetingSeatIdx = -1;
+        }
+        if (av.meetingEl) { av.meetingEl.remove(); av.meetingEl = null; }
+        av.meetingJoinUrl = null;
+    }
+}
+
 // 애니메이션 루프에서 레이블 위치 갱신 (animate 함수 내에서 호출됨)
 function updatePersonLabels() {
     for (const [, av] of personAvatarMap) {
@@ -2856,6 +2948,15 @@ function updatePersonLabels() {
             const bs = worldToScreen(bubblePos);
             av.bubbleEl.style.left = `${bs.x}px`;
             av.bubbleEl.style.top  = `${bs.y}px`;
+        }
+
+        // P6: 📹 인디케이터를 말풍선보다 위에 배치
+        if (av.meetingEl) {
+            const mPos = av.group.position.clone();
+            mPos.y += 2.9;
+            const ms = worldToScreen(mPos);
+            av.meetingEl.style.left = `${ms.x}px`;
+            av.meetingEl.style.top  = `${ms.y}px`;
         }
     }
 }
@@ -3194,6 +3295,8 @@ function connectWS() {
             syncPersonAvatars(d.people);
         } else if (d.type === 'teams-notification') {
             showTeamsNotification3D(d);
+        } else if (d.type === 'meeting-status') {
+            handleMeetingStatus(d);
         }
     };
     ws.onclose = () => { document.getElementById('conn-status').textContent = 'Reconnecting...'; document.getElementById('conn-status').style.color = '#f00'; setTimeout(connectWS, 3000); };

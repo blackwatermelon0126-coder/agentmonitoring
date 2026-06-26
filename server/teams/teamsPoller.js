@@ -382,4 +382,4 @@ function startPolling({ getPeople, broadcast }) {
     log('폴링 등록 완료 (간격: 15초)');
 }
 
-export { startPolling, pollOnce, graphGet, GRAPH_BASE, TENANT_ID };
+export { startPolling, pollOnce, pollMeetingsOnce, graphGet, GRAPH_BASE, TENANT_ID };
