@@ -9,6 +9,7 @@ import { createFactory, updateFactory } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
 import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
+import { initLunchGame, triggerLunchGame } from './lunchgame.js';
 
 
 // ---- 캐릭터 특성 풀 ----
@@ -1482,6 +1483,10 @@ scene.add = _origSceneAdd;
 const ENV_BACK_OFFSET = -18;
 envGroup.position.z = ENV_BACK_OFFSET;
 
+// allSpots는 envGroup 로컬 좌표로 추가됐으므로, 에이전트(월드 좌표)가 올바른 위치로
+// 걸어가려면 ENV_BACK_OFFSET를 더해 월드 좌표로 변환해야 한다.
+allSpots.forEach(s => { s.z += ENV_BACK_OFFSET; });
+
 // 계단 오르내리는 에이전트 애니메이션
 function updateStairAgent(elapsed) {
     if (!stairAgent) return;
@@ -1586,6 +1591,8 @@ const LEISURE_SPOTS = [
     { type: 'park',  x: 15, z: 1, label: '🌳 공원' },
     { type: 'park',  x: 9, z: -4, label: '🌳 공원' },
 ];
+// envGroup-로컬 좌표로 정의됐으므로 월드 좌표로 변환 (allSpots 동일 이유)
+LEISURE_SPOTS.forEach(s => { s.z += ENV_BACK_OFFSET; });
 
 function pickLeisureSpot() { return pick(LEISURE_SPOTS); }
 
@@ -2753,7 +2760,8 @@ function createPersonAvatar(person) {
     const labelEl = makePersonLabel(person.name, person.color || '#4A90E2');
 
     personAvatarMap.set(person.id, { group, personObj, pickMeshes, badge, labelEl, bubbleEl: null, unreadCount: 0,
-        meetingEl: null, preMeetingPos: null, meetingSeatIdx: -1, meetingJoinUrl: null });
+        meetingEl: null, preMeetingPos: null, meetingSeatIdx: -1, meetingJoinUrl: null,
+        displayName: person.name, shirtColorHex: person.color || '#4A90E2' });
 }
 
 /**
@@ -3303,6 +3311,30 @@ function connectWS() {
 }
 connectWS();
 
+// ---- 점심 게임 초기화 ----
+initLunchGame({
+    getPeople: () => {
+        const out = [];
+        personAvatarMap.forEach((av, id) => {
+            const name = av.displayName || id;
+            out.push({ id, name, color: av.shirtColorHex || '#4a90d9' });
+        });
+        return out;
+    },
+    addFloatingText: (text, color) => addFloatingText(text, new THREE.Vector3(0, 6, -5), color, 48),
+});
+
+// 12:30 자동 트리거 (분당 1회 체크)
+let _lgLastMinute = -1;
+setInterval(() => {
+    const now = new Date();
+    const hm = now.getHours() * 100 + now.getMinutes();
+    if (hm === 1230 && _lgLastMinute !== now.getDate() * 10000 + 1230) {
+        _lgLastMinute = now.getDate() * 10000 + 1230;
+        triggerLunchGame();
+    }
+}, 30000);
+
 // 초기 사람 목록 fetch
 fetch('http://localhost:3300/api/people')
     .then(r => r.json())
@@ -3331,4 +3363,6 @@ window.addEventListener('keydown', (e) => {
     }
     // R 키로 초기 뷰
     if (e.code === 'KeyR') tweenView(VIEWS['1']);
+    // G 키로 점심 게임 수동 실행
+    if (e.code === 'KeyG') triggerLunchGame();
 });
