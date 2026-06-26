@@ -2,11 +2,49 @@ import * as THREE from 'three';
 
 const SKIN_COLORS = [0xFFCC99, 0xF5CBA7, 0xFFE0B2, 0xD2B48C, 0xC68642, 0x8D5524, 0xFFDFC4, 0xF0C8A0];
 const HAIR_COLORS = [0x1B1B1B, 0x3E2723, 0x5D4037, 0x6D4C41, 0x795548, 0xD4A574, 0xFFD54F, 0xE65100, 0x880E4F, 0x4E342E];
+// createDetailedPerson 이 인식하는 헤어스타일. 'long' 은 여성 전용(아래 분기), 나머지는 공통.
+const HAIR_STYLES = ['short', 'ponytail', 'bun', 'long'];
 
 function box(w, h, d, color) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color, roughness: 0.6 }));
     mesh.castShadow = true; mesh.receiveShadow = true;
     return mesh;
+}
+
+// 문자열 시드 → 32bit 해시 (djb2). 같은 시드는 항상 같은 값 → 외형 결정성 보장.
+function hashSeed(s) {
+    let h = 5381;
+    const str = String(s == null ? '' : s);
+    for (let i = 0; i < str.length; i++) h = (((h << 5) + h) + str.charCodeAt(i)) >>> 0;
+    return h >>> 0;
+}
+
+/**
+ * person.id(또는 임의 시드)로 캐릭터 외형 traits 를 결정적으로 생성한다.
+ * 같은 id 는 항상 같은 외형(피부·머리색·헤어스타일·성별) → 새로고침·재접속에도 일관.
+ * 셔츠색(shirtColor)만 외부에서 person.color 로 지정한다. 바지·신발은 오피스 톤 고정.
+ *
+ * @param {string} seed       - 결정성 시드 (보통 person.id)
+ * @param {number} shirtColor - 셔츠 색상 (0xRRGGBB) — person.color 반영
+ * @returns {object} createDetailedPerson 용 traits
+ */
+export function traitsFromSeed(seed, shirtColor) {
+    const h = hashSeed(seed);
+    const gender = (h & 1) ? 'female' : 'male';
+    const skinColor = SKIN_COLORS[(h >>> 1) % SKIN_COLORS.length];
+    const hairColor = HAIR_COLORS[(h >>> 5) % HAIR_COLORS.length];
+    // 'long' 은 여성만 추가 메시가 그려지므로 남성에겐 제외(시각적 효과 동일 방지).
+    const styles = gender === 'female' ? HAIR_STYLES : HAIR_STYLES.filter(s => s !== 'long');
+    const hairStyle = styles[(h >>> 9) % styles.length];
+    return {
+        gender,
+        skinColor,
+        hairColor,
+        shirtColor,
+        pantsColor: 0x263238,
+        shoeColor: 0x212121,
+        hairStyle,
+    };
 }
 
 export function createDetailedPerson(traits) {

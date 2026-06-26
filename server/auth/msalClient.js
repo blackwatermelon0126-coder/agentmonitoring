@@ -67,6 +67,7 @@ const pca = new PublicClientApplication(msalConfig);
 const SCOPES = [
     'Chat.Read',
     'Chat.ReadBasic',
+    'Calendars.Read',       // 로그인 사용자의 캘린더(진행 중 온라인 회의) 조회 — 화상회의 이동 기능용
     'offline_access',
     'User.Read',
     'User.Read.All',        // 조직 디렉터리 사용자 조회 (formationlabs 멤버) — 조직 사용자 피커용

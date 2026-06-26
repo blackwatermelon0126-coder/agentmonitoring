@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createFactory, updateFactory } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
-import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs } from './character.js';
+import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
 
 
@@ -613,9 +613,33 @@ function o2Desk(localX, floor, screenColor) {
     );
     screen.position.set(OFFICE2.x + localX, yBase + 1.1, OFFICE2.z - 0.17);
     scene.add(screen);
+
+    // 노트북 (책상 위, 작업자 쪽) — 베이스 + 화면 + 화면 글로우
+    const lapBase = new THREE.Mesh(
+        new THREE.BoxGeometry(0.34, 0.03, 0.24),
+        new THREE.MeshStandardMaterial({ color: 0x9aa0a6, metalness: 0.6, roughness: 0.4 })
+    );
+    lapBase.position.set(OFFICE2.x + localX, yBase + 0.79, OFFICE2.z + 0.18);
+    scene.add(lapBase);
+    const lapScreen = new THREE.Mesh(
+        new THREE.BoxGeometry(0.34, 0.22, 0.02),
+        new THREE.MeshStandardMaterial({ color: 0x202124, metalness: 0.5 })
+    );
+    lapScreen.position.set(OFFICE2.x + localX, yBase + 0.90, OFFICE2.z + 0.07);
+    lapScreen.rotation.x = -0.35;
+    scene.add(lapScreen);
+    const lapGlow = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.30, 0.18),
+        new THREE.MeshBasicMaterial({ color: screenColor })
+    );
+    lapGlow.position.set(OFFICE2.x + localX, yBase + 0.90, OFFICE2.z + 0.082);
+    lapGlow.rotation.x = -0.35;
+    scene.add(lapGlow);
 }
-o2Desk(-2, 1, 0x4CAF50);
-o2Desk(1, 1, 0x2196F3);
+// 역할 에이전트 근무지 = FLLABS 1층 책상 5개(노트북, 역할색). 2층은 장식 책상 2개 유지.
+const FLLABS_DESK_LOCALX = [-3, -1.5, 0, 1.5, 3];
+const FLLABS_DESK_COLORS = [0x4A90D9, 0xE67E22, 0x27AE60, 0x8E44AD, 0xE74C3C];
+FLLABS_DESK_LOCALX.forEach((lx, i) => o2Desk(lx, 1, FLLABS_DESK_COLORS[i]));
 o2Desk(-2, 2, 0xFF9800);
 o2Desk(1, 2, 0xE91E63);
 
@@ -1059,24 +1083,19 @@ function createDesk(x, z, idx) {
     return screen;
 }
 
-// 기존 AGENT OFFICE 책상 (한 줄 배치, 컴퓨터 포함) — 중앙 3개만 점유 가능(나머지는 빈 책상 소품)
+// 기존 AGENT OFFICE 책상 — 배경 소품(점유 안 함). 역할 에이전트는 FLLABS 사무실에서 근무.
 let spotIdx = 0;
 const agentDeskLayout = [-6, -4, -2, 0, 2, 4, 6];
-const CLAIMABLE_DESK_X = new Set([-2, 0, 2]);
 for (const x of agentDeskLayout) {
-    const z = -1.5;
-    createDesk(x, z, spotIdx);
-    if (CLAIMABLE_DESK_X.has(x)) {
-        // 점유 가능한 컴퓨터 책상 — 에이전트가 빈자리를 찾아 앉는다. screenIdx로 모니터 글로우 매핑.
-        allSpots.push({ x, z: z + 0.6, y: 0, type: 'desk', screenIdx: spotIdx, occupied: false });
-    }
+    createDesk(x, -1.5, spotIdx);
     spotIdx++;
 }
 
-// FLLABS 2F OFFICE 빌딩 1층 컴퓨터 책상 2개도 점유 풀에 추가 (지상층 — 이동 단순).
-// 위치는 위 o2Desk(-2,1)·o2Desk(1,1)와 일치. screenIdx 없음(별도 책상이라 글로우 미적용).
-allSpots.push({ x: OFFICE2.x - 2, z: OFFICE2.z + 0.6, y: 0, type: 'desk', screenIdx: null, occupied: false });
-allSpots.push({ x: OFFICE2.x + 1, z: OFFICE2.z + 0.6, y: 0, type: 'desk', screenIdx: null, occupied: false });
+// 역할 에이전트 근무지 = FLLABS 2F OFFICE 빌딩 1층 책상 5개(노트북). 전원 이곳으로 출근.
+// 위치는 위 FLLABS_DESK_LOCALX o2Desk(...,1) 책상과 일치. 지상층(y=0)이라 이동 단순.
+for (const lx of FLLABS_DESK_LOCALX) {
+    allSpots.push({ x: OFFICE2.x + lx, z: OFFICE2.z + 0.6, y: 0, type: 'desk', screenIdx: null, occupied: false });
+}
 
 // 서버랙
 const rack = new THREE.Group();
@@ -2243,6 +2262,404 @@ function worldToScreen(worldPos) {
     };
 }
 
+// ============================================================
+// 🏝️ 야외 휴양지 회의실 3곳 (보라카이 · 괌 · 오키나와)
+//  - 추가(additive) 전용: 기존 코드 수정 없음.
+//  - 이 위치에서 scene.add 는 _origSceneAdd (씬 루트 = 월드 좌표).
+//  - 사람 아바타가 모인 앞 공간(x≈-2~0, z≈-2~1) 주변에 좌/중/우로 분산 배치.
+// ============================================================
+{
+    // ---- 공통 헬퍼들 ----
+
+    // 텍스트 표지판: CanvasTexture + PlaneGeometry (기존 o2Sign 패턴과 동일)
+    function makeResortSign(text, bg1, bg2, accent) {
+        const cv = document.createElement('canvas');
+        cv.width = 512; cv.height = 128;
+        const c = cv.getContext('2d');
+        const g = c.createLinearGradient(0, 0, 0, 128);
+        g.addColorStop(0, bg1); g.addColorStop(1, bg2);
+        c.fillStyle = g; c.fillRect(0, 0, 512, 128);
+        c.strokeStyle = accent; c.lineWidth = 6; c.strokeRect(5, 5, 502, 118);
+        c.fillStyle = '#FFFFFF'; c.font = 'bold 56px sans-serif';
+        c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.fillText(text, 256, 64);
+        const sign = new THREE.Mesh(
+            new THREE.PlaneGeometry(3.2, 0.8),
+            new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv), transparent: true })
+        );
+        return sign;
+    }
+
+    // 표지판 기둥 + 사인 한 세트
+    function makeSignPost(text, bg1, bg2, accent, x, z) {
+        const grp = new THREE.Group();
+        const postMat = new THREE.MeshStandardMaterial({ color: 0x6D4C41, roughness: 0.8 });
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 2.4, 8), postMat);
+        post.position.y = 1.2; post.castShadow = true;
+        grp.add(post);
+        const sign = makeResortSign(text, bg1, bg2, accent);
+        sign.position.y = 2.5;
+        grp.add(sign);
+        grp.position.set(x, 0, z);
+        return grp;
+    }
+
+    // 야자수: 기둥(Cylinder) + 잎(여러 평평한 Cone를 각도 배치)
+    function makePalm(x, z, scale = 1) {
+        const grp = new THREE.Group();
+        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8D6E47, roughness: 0.9 });
+        const trunkH = 3.2 * scale;
+        const trunk = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.12 * scale, 0.22 * scale, trunkH, 8),
+            trunkMat
+        );
+        trunk.position.y = trunkH / 2;
+        trunk.castShadow = true;
+        grp.add(trunk);
+        // 잎: 길쭉한 Cone를 비스듬히 8방향
+        const leafMat = new THREE.MeshStandardMaterial({ color: 0x2E7D32, roughness: 0.7, side: THREE.DoubleSide });
+        const leaves = 8;
+        for (let i = 0; i < leaves; i++) {
+            const leaf = new THREE.Mesh(
+                new THREE.ConeGeometry(0.28 * scale, 2.2 * scale, 4),
+                leafMat
+            );
+            const ang = (i / leaves) * Math.PI * 2;
+            leaf.position.set(
+                Math.cos(ang) * 1.0 * scale,
+                trunkH - 0.1 * scale,
+                Math.sin(ang) * 1.0 * scale
+            );
+            leaf.rotation.z = Math.cos(ang) * -0.9;
+            leaf.rotation.x = Math.sin(ang) * 0.9;
+            leaf.castShadow = true;
+            grp.add(leaf);
+        }
+        // 코코넛 몇 개
+        const coconutMat = new THREE.MeshStandardMaterial({ color: 0x4E342E, roughness: 0.6 });
+        for (let i = 0; i < 3; i++) {
+            const co = new THREE.Mesh(new THREE.SphereGeometry(0.14 * scale, 8, 8), coconutMat);
+            const ang = (i / 3) * Math.PI * 2;
+            co.position.set(Math.cos(ang) * 0.25 * scale, trunkH - 0.3 * scale, Math.sin(ang) * 0.25 * scale);
+            grp.add(co);
+        }
+        grp.position.set(x, 0, z);
+        return grp;
+    }
+
+    // 회의 테이블 (원형/사각) + 좌석 N개
+    function makeMeetingTable(x, z, opts = {}) {
+        const grp = new THREE.Group();
+        const round = opts.round || false;
+        const radius = opts.radius || 1.0;
+        const tableH = opts.tableH || 0.75;
+        const topColor = opts.topColor || 0xD7CCC8;
+        const seatColor = opts.seatColor || 0xFFFFFF;
+        const seats = opts.seats || 4;
+        const lowSeat = opts.lowSeat || false; // 방석(낮은 좌석)
+
+        const topMat = new THREE.MeshStandardMaterial({ color: topColor, roughness: 0.5 });
+        const legMat = new THREE.MeshStandardMaterial({ color: 0x5D4037, roughness: 0.8 });
+        // 상판
+        const top = round
+            ? new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 0.1, 24), topMat)
+            : new THREE.Mesh(new THREE.BoxGeometry(radius * 2, 0.1, radius * 1.4), topMat);
+        top.position.y = tableH; top.castShadow = true; top.receiveShadow = true;
+        grp.add(top);
+        // 다리(중앙 기둥)
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, tableH, 10), legMat);
+        leg.position.y = tableH / 2; leg.castShadow = true;
+        grp.add(leg);
+        // 좌석
+        const seatMat = new THREE.MeshStandardMaterial({ color: seatColor, roughness: 0.7 });
+        const seatR = radius + 0.8;
+        const seatH = lowSeat ? 0.12 : 0.45;
+        for (let i = 0; i < seats; i++) {
+            const ang = (i / seats) * Math.PI * 2;
+            const sx = Math.cos(ang) * seatR;
+            const sz = Math.sin(ang) * seatR;
+            if (lowSeat) {
+                // 방석: 납작한 박스
+                const cushion = new THREE.Mesh(new THREE.BoxGeometry(0.6, seatH, 0.6), seatMat);
+                cushion.position.set(sx, seatH / 2, sz);
+                cushion.castShadow = true;
+                grp.add(cushion);
+            } else {
+                // 의자: 좌판 + 등받이
+                const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.1, 12), seatMat);
+                seat.position.set(sx, seatH, sz); seat.castShadow = true;
+                grp.add(seat);
+                const sleg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, seatH, 8), legMat);
+                sleg.position.set(sx, seatH / 2, sz);
+                grp.add(sleg);
+                const back = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.45, 0.08), seatMat);
+                back.position.set(sx - Math.cos(ang) * 0.28, seatH + 0.27, sz - Math.sin(ang) * 0.28);
+                back.rotation.y = -ang;
+                grp.add(back);
+            }
+        }
+        grp.position.set(x, 0, z);
+        return grp;
+    }
+
+    // 비치 파라솔: 기둥 + 원뿔 캐노피
+    function makeParasol(x, z, color = 0xFF7043) {
+        const grp = new THREE.Group();
+        const pole = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.05, 0.05, 2.6, 8),
+            new THREE.MeshStandardMaterial({ color: 0xECEFF1, roughness: 0.4 })
+        );
+        pole.position.y = 1.3; pole.castShadow = true;
+        grp.add(pole);
+        const canopy = new THREE.Mesh(
+            new THREE.ConeGeometry(1.5, 0.8, 16),
+            new THREE.MeshStandardMaterial({ color, roughness: 0.6, side: THREE.DoubleSide })
+        );
+        canopy.position.y = 2.7; canopy.castShadow = true;
+        grp.add(canopy);
+        grp.position.set(x, 0, z);
+        return grp;
+    }
+
+    // 선베드(비치 라운저)
+    function makeSunbed(x, z, rotY = 0) {
+        const grp = new THREE.Group();
+        const frameMat = new THREE.MeshStandardMaterial({ color: 0xFFF8E1, roughness: 0.6 });
+        const base = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.12, 1.8), frameMat);
+        base.position.y = 0.3; base.castShadow = true;
+        grp.add(base);
+        const head = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.12, 0.6), frameMat);
+        head.position.set(0, 0.5, -0.7); head.rotation.x = -0.5;
+        grp.add(head);
+        for (const dx of [-0.3, 0.3]) for (const dz of [-0.8, 0.8]) {
+            const l = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.3, 6), frameMat);
+            l.position.set(dx, 0.15, dz);
+            grp.add(l);
+        }
+        grp.position.set(x, 0, z);
+        grp.rotation.y = rotY;
+        return grp;
+    }
+
+    // 띠풀 지붕 카바나/티키: 기둥 4개 + 원뿔(띠풀) 지붕
+    function makeCabana(x, z, opts = {}) {
+        const grp = new THREE.Group();
+        const w = opts.w || 4.5;
+        const h = opts.h || 2.6;
+        const postMat = new THREE.MeshStandardMaterial({ color: 0x6D4C41, roughness: 0.9 });
+        for (const dx of [-1, 1]) for (const dz of [-1, 1]) {
+            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, h, 8), postMat);
+            post.position.set(dx * w / 2, h / 2, dz * w / 2);
+            post.castShadow = true;
+            grp.add(post);
+        }
+        // 띠풀 지붕: 큰 원뿔(낮고 넓게)
+        const thatchMat = new THREE.MeshStandardMaterial({ color: 0xC9A24B, roughness: 0.95 });
+        const roof = new THREE.Mesh(new THREE.ConeGeometry(w * 0.85, 1.6, 4), thatchMat);
+        roof.position.y = h + 0.7; roof.rotation.y = Math.PI / 4;
+        roof.castShadow = true;
+        grp.add(roof);
+        grp.position.set(x, 0, z);
+        return grp;
+    }
+
+    // 티키 횃불
+    function makeTorch(x, z) {
+        const grp = new THREE.Group();
+        const pole = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.05, 0.06, 1.8, 6),
+            new THREE.MeshStandardMaterial({ color: 0x5D4037, roughness: 0.9 })
+        );
+        pole.position.y = 0.9; pole.castShadow = true;
+        grp.add(pole);
+        const flame = new THREE.Mesh(
+            new THREE.ConeGeometry(0.16, 0.5, 8),
+            new THREE.MeshStandardMaterial({ color: 0xFF7043, emissive: 0xE65100, emissiveIntensity: 0.8 })
+        );
+        flame.position.y = 2.0;
+        grp.add(flame);
+        grp.position.set(x, 0, z);
+        return grp;
+    }
+
+    // 해먹: 두 기둥 + 곡선 천(평평한 박스로 단순화)
+    function makeHammock(x, z) {
+        const grp = new THREE.Group();
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0x6D4C41, roughness: 0.9 });
+        for (const dz of [-1, 1]) {
+            const p = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.6, 8), poleMat);
+            p.position.set(0, 0.8, dz * 1.4); p.castShadow = true;
+            grp.add(p);
+        }
+        const cloth = new THREE.Mesh(
+            new THREE.BoxGeometry(0.8, 0.1, 2.4),
+            new THREE.MeshStandardMaterial({ color: 0xFFCC80, roughness: 0.7 })
+        );
+        cloth.position.y = 0.7; cloth.castShadow = true;
+        grp.add(cloth);
+        grp.position.set(x, 0, z);
+        return grp;
+    }
+
+    // 시사(사자견) 석상: 박스/구 조합
+    function makeShisa(x, z, rotY = 0) {
+        const grp = new THREE.Group();
+        const stoneMat = new THREE.MeshStandardMaterial({ color: 0xBCAAA4, roughness: 0.95 });
+        const ped = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.5), stoneMat);
+        ped.position.y = 0.2; ped.castShadow = true; grp.add(ped);
+        const body = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.55, 0.5), stoneMat);
+        body.position.y = 0.65; body.castShadow = true; grp.add(body);
+        const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 10, 10), stoneMat);
+        head.position.set(0, 1.05, 0.05); head.castShadow = true; grp.add(head);
+        // 귀
+        for (const dx of [-0.18, 0.18]) {
+            const ear = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.18, 6), stoneMat);
+            ear.position.set(dx, 1.25, 0.05); grp.add(ear);
+        }
+        grp.position.set(x, 0, z); grp.rotation.y = rotY;
+        return grp;
+    }
+
+    // 석등(돌 등롱): 박스 단 쌓기
+    function makeStoneLantern(x, z) {
+        const grp = new THREE.Group();
+        const stoneMat = new THREE.MeshStandardMaterial({ color: 0x9E9E9E, roughness: 0.95 });
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.35, 0.3, 8), stoneMat);
+        base.position.y = 0.15; base.castShadow = true; grp.add(base);
+        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.7, 8), stoneMat);
+        shaft.position.y = 0.65; grp.add(shaft);
+        const box = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.5), stoneMat);
+        box.position.y = 1.2; box.castShadow = true; grp.add(box);
+        // 등불(발광)
+        const light = new THREE.Mesh(
+            new THREE.BoxGeometry(0.25, 0.25, 0.25),
+            new THREE.MeshStandardMaterial({ color: 0xFFE082, emissive: 0xFFB300, emissiveIntensity: 0.7 })
+        );
+        light.position.y = 1.2; grp.add(light);
+        const cap = new THREE.Mesh(new THREE.ConeGeometry(0.45, 0.35, 4), stoneMat);
+        cap.position.y = 1.55; cap.rotation.y = Math.PI / 4; cap.castShadow = true; grp.add(cap);
+        grp.position.set(x, 0, z);
+        return grp;
+    }
+
+    // 류큐 정자(붉은 기와 지붕 파빌리온): 기둥 4 + 피라미드 기와 지붕
+    function makePavilion(x, z, opts = {}) {
+        const grp = new THREE.Group();
+        const w = opts.w || 5.5;
+        const h = opts.h || 2.8;
+        const postMat = new THREE.MeshStandardMaterial({ color: 0x8D2F1E, roughness: 0.8 });
+        // 바닥 단(낮은 마루)
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0xA1887F, roughness: 0.85 });
+        const floor = new THREE.Mesh(new THREE.BoxGeometry(w, 0.2, w), floorMat);
+        floor.position.y = 0.1; floor.receiveShadow = true; grp.add(floor);
+        for (const dx of [-1, 1]) for (const dz of [-1, 1]) {
+            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, h, 10), postMat);
+            post.position.set(dx * (w / 2 - 0.4), h / 2 + 0.2, dz * (w / 2 - 0.4));
+            post.castShadow = true; grp.add(post);
+        }
+        // 붉은 기와 지붕: 피라미드 + 처마
+        const tileMat = new THREE.MeshStandardMaterial({ color: 0xB23A2E, roughness: 0.6 });
+        const eave = new THREE.Mesh(new THREE.BoxGeometry(w + 0.6, 0.12, w + 0.6), tileMat);
+        eave.position.y = h + 0.25; eave.castShadow = true; grp.add(eave);
+        const roof = new THREE.Mesh(new THREE.ConeGeometry(w * 0.78, 1.8, 4), tileMat);
+        roof.position.y = h + 1.1; roof.rotation.y = Math.PI / 4; roof.castShadow = true;
+        grp.add(roof);
+        grp.position.set(x, 0, z);
+        return grp;
+    }
+
+    // 바닥 패드(테마색 원형/사각)
+    function makeFloorPad(x, z, w, d, color, round = false) {
+        const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
+        const pad = round
+            ? new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2, 0.08, 32), mat)
+            : new THREE.Mesh(new THREE.BoxGeometry(w, 0.08, d), mat);
+        pad.position.set(x, 0.04, z);
+        pad.receiveShadow = true;
+        return pad;
+    }
+
+    // ============================================================
+    // 1) BORACAY — 필리핀 화이트샌드 비치 (중심 x=-15, z=5)
+    // ============================================================
+    function buildBoracay(cx, cz) {
+        // 하얀 모래 바닥
+        scene.add(makeFloorPad(cx, cz, 11, 11, 0xF5EFD6));
+        // 청록색 물 띠(패드 한쪽 가장자리)
+        const water = makeFloorPad(cx, cz + 5.2, 11, 2.4, 0x26C6DA);
+        scene.add(water);
+        // 야자수 몇 그루
+        scene.add(makePalm(cx - 4.2, cz - 3.5, 1.1));
+        scene.add(makePalm(cx + 4.0, cz - 2.5, 0.95));
+        scene.add(makePalm(cx - 3.5, cz + 2.0, 1.0));
+        // 비치 파라솔 + 선베드
+        scene.add(makeParasol(cx + 3.5, cz + 2.5, 0xFF7043));
+        scene.add(makeSunbed(cx + 3.0, cz + 2.5, 0.2));
+        scene.add(makeSunbed(cx + 4.0, cz + 2.5, -0.2));
+        // 회의 테이블 + 비치 의자(흰색)
+        scene.add(makeMeetingTable(cx, cz, {
+            round: true, radius: 1.0, topColor: 0xECEFF1, seatColor: 0xFFFFFF, seats: 5
+        }));
+        // 표지판
+        scene.add(makeSignPost('BORACAY', '#00ACC1', '#26C6DA', '#FFF59D', cx - 4.5, cz + 4.5));
+    }
+
+    // ============================================================
+    // 2) GUAM — 태평양 트로피컬 라운지 (중심 x=1, z=10)
+    // ============================================================
+    function buildGuam(cx, cz) {
+        // 모래/잔디 혼합 바닥(따뜻한 베이지)
+        scene.add(makeFloorPad(cx, cz, 11, 11, 0xE6D9A8, true));
+        // 티키 카바나(띠풀 지붕)
+        scene.add(makeCabana(cx, cz, { w: 5.0, h: 2.7 }));
+        // 카바나 아래 원형 회의 테이블 + 의자
+        scene.add(makeMeetingTable(cx, cz, {
+            round: true, radius: 1.0, topColor: 0xD7A86E, seatColor: 0x8D6E63, seats: 6
+        }));
+        // 야자수
+        scene.add(makePalm(cx - 4.5, cz - 3.5, 1.05));
+        scene.add(makePalm(cx + 4.5, cz + 3.5, 1.0));
+        // 해먹
+        scene.add(makeHammock(cx + 4.2, cz - 2.5));
+        // 티키 횃불 (입구 양옆)
+        scene.add(makeTorch(cx - 3.2, cz + 3.2));
+        scene.add(makeTorch(cx + 3.2, cz + 3.2));
+        // 표지판
+        scene.add(makeSignPost('GUAM', '#00897B', '#26A69A', '#FFE082', cx + 4.5, cz - 4.0));
+    }
+
+    // ============================================================
+    // 3) OKINAWA — 류큐/일본 트로피컬 (중심 x=16, z=5)
+    // ============================================================
+    function buildOkinawa(cx, cz) {
+        // 차분한 바닥(자갈/돌마당 톤)
+        scene.add(makeFloorPad(cx, cz, 11, 11, 0xD7CFC2));
+        // 류큐 정자(붉은 기와)
+        scene.add(makePavilion(cx, cz, { w: 5.5, h: 2.8 }));
+        // 정자 아래 낮은 테이블 + 방석
+        scene.add(makeMeetingTable(cx, cz, {
+            round: false, radius: 0.9, tableH: 0.35, topColor: 0x5D4037,
+            seatColor: 0xC62828, seats: 4, lowSeat: true
+        }));
+        // 시사(사자견) 석상 2개 — 정자 앞 양옆, 서로 마주보게
+        scene.add(makeShisa(cx - 3.2, cz + 3.6, Math.PI * 0.15));
+        scene.add(makeShisa(cx + 3.2, cz + 3.6, -Math.PI * 0.15));
+        // 석등 2개
+        scene.add(makeStoneLantern(cx - 4.2, cz - 3.0));
+        scene.add(makeStoneLantern(cx + 4.2, cz - 3.0));
+        // 열대 식물(야자수)
+        scene.add(makePalm(cx - 4.5, cz + 1.0, 0.9));
+        scene.add(makePalm(cx + 4.5, cz + 1.0, 0.9));
+        // 표지판
+        scene.add(makeSignPost('OKINAWA', '#C62828', '#E53935', '#FFF59D', cx - 4.5, cz + 4.5));
+    }
+
+    // ---- 3개 리조트 배치 (앞 공간 좌/중/우) ----
+    buildBoracay(16, 18);   // 공장(좌측)과 겹쳐 → 오키나와 앞(우측 전방)으로 이동
+    buildGuam(1, 10);
+    buildOkinawa(16, 5);
+}
+
 // P5-D: 2D 캔버스 좌표(px) ↔ 3D 씬 좌표 변환 규약 (단일 진실).
 // 2D 캔버스는 800×600, 중앙(400,300) 기준. 2D x → 3D x, 2D y → 3D z (바닥 평면).
 // createPersonAvatar(읽기)와 3D 드래그 영속화(쓰기)가 동일한 규약을 공유해 왕복 일관성을 보장한다.
@@ -2277,17 +2694,9 @@ function scenePosToPerson(sceneX, sceneZ) {
 function createPersonAvatar(person) {
     const color = parseInt((person.color || '#4A90E2').replace('#', ''), 16);
 
-    // 상세 캐릭터 모델 — color 를 셔츠색에 반영, 나머지 외형은 기본값.
-    // person.id 해시로 외형을 약간 다양화(머리/피부/바지/신발은 결정적으로 선택).
-    const personObj = createDetailedPerson({
-        gender:     'male',
-        skinColor:  0xFFDFC4,
-        hairColor:  0x3E2723,
-        shirtColor: color,        // 사람 색상 → 셔츠
-        pantsColor: 0x263238,
-        shoeColor:  0x212121,
-        hairStyle:  'short',
-    });
+    // 상세 캐릭터 모델 — person.id 해시로 외형(피부·머리색·헤어스타일·성별)을 결정적 다양화.
+    // 같은 id 는 항상 같은 외형 → 새로고침·재접속에도 일관. 셔츠색만 person.color 반영(바지·신발 고정).
+    const personObj = createDetailedPerson(traitsFromSeed(person.id, color));
     const group = personObj.group;
     group.scale.set(0.9, 0.9, 0.9);   // 계단 에이전트와 동일 스케일
 
@@ -2488,10 +2897,14 @@ function updatePersonLabels() {
 // 위치: 좌상단(#info·people-panel·status-panel 과 겹치지 않는 빈 영역).
 (function createOrgUserPicker3D() {
     const API_BASE = `http://${location.hostname}:3300`;
-    // 사용자 추가 시 순환 지정할 색상 팔레트
-    const COLOR_PALETTE = ['#4A90E2', '#E67E22', '#27AE60', '#8E44AD', '#E74C3C'];
+    // 사용자 추가 시 순환 지정할 색상 팔레트 (10색 — 6명째부터 셔츠색 중복 완화)
+    const COLOR_PALETTE = [
+        '#4A90E2', '#E67E22', '#27AE60', '#8E44AD', '#E74C3C',
+        '#16A085', '#F39C12', '#2980B9', '#C0392B', '#7F8C8D',
+    ];
     let colorCursor = 0;
-    let orgUsers = [];   // 조회된 조직 사용자 캐시 (검색 필터용)
+    let orgUsers = [];               // 조회된 조직 사용자 캐시 (검색 필터용)
+    let existingEmails = new Set();  // 이미 등록된 인물 email(소문자) — 목록서 '추가됨' 사전 표시용
 
     function escAttr(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -2501,11 +2914,13 @@ function updatePersonLabels() {
     // ── 패널 컨테이너 ──
     const panel = document.createElement('div');
     panel.id = 'org-picker';
+    // 상단 좌측(유일하게 빈 코너) 유지. 펼침 시 하단 좌측 #status-panel 과 겹치지 않도록
+    // 최대 높이를 뷰포트 하단 여백(약 230px = status-panel + 마진) 만큼 비워 제한한다.
     panel.style.cssText = `
         position: absolute; top: 10px; left: 10px; z-index: 100;
         color: #fff; font-family: monospace; font-size: 12px;
         background: rgba(0,0,0,0.6); padding: 10px 14px; border-radius: 8px;
-        backdrop-filter: blur(4px); width: 280px; max-height: 60vh;
+        backdrop-filter: blur(4px); width: 280px; max-height: calc(100vh - 230px);
         display: flex; flex-direction: column; overflow: hidden;
     `;
 
@@ -2554,12 +2969,28 @@ function updatePersonLabels() {
 
     // 검색창 입력 → 필터 렌더
     searchEl.addEventListener('input', () => renderUsers(searchEl.value));
+    // Enter → 아직 추가되지 않은 첫 후보를 바로 추가 (키보드 지원)
+    searchEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && firstAddBtn) { e.preventDefault(); firstAddBtn.click(); }
+    });
+
+    // 등록된 people email 집합 갱신 — 목록에서 '추가됨' 사전 표시용
+    async function refreshExistingEmails() {
+        try {
+            const people = await fetch(`${API_BASE}/api/people`).then(r => r.json());
+            existingEmails = new Set(
+                (Array.isArray(people) ? people : [])
+                    .map(p => (p.email || '').toLowerCase()).filter(Boolean));
+        } catch { /* 무시 — 빈 집합 유지 */ }
+    }
 
     // ── 1. 조직 사용자 조회 ──
     async function loadOrgUsers() {
         setStatus('조직 사용자 불러오는 중…');
         listEl.innerHTML = '';
         try {
+            // 이미 등록된 인물 email 집합 선조회 — 목록 렌더 시 '추가됨' 표시에 사용
+            await refreshExistingEmails();
             const res = await fetch(`${API_BASE}/api/org-users`);
             if (res.status === 401) { setStatus('조직 인증 필요 (로그인 후 사용)', '#ff0'); return; }
             if (!res.ok) { setStatus(`사용자 조회 실패 (${res.status})`, '#f66'); return; }
@@ -2576,6 +3007,7 @@ function updatePersonLabels() {
     }
 
     // ── 2. 사용자 목록 렌더 (검색어로 필터) ──
+    let firstAddBtn = null;   // Enter 키로 추가할 첫 후보(미등록) 버튼
     function renderUsers(query) {
         const q = (query || '').toLowerCase().trim();
         const filtered = q
@@ -2584,7 +3016,11 @@ function updatePersonLabels() {
                 || (u.email || '').toLowerCase().includes(q))
             : orgUsers;
 
+        // 검색 중이면 결과 건수(N/총M명), 아니면 총원만 표시
+        setStatus(q ? `${filtered.length}/${orgUsers.length}명` : `${orgUsers.length}명`);
+
         listEl.innerHTML = '';
+        firstAddBtn = null;
         if (filtered.length === 0) {
             const empty = document.createElement('div');
             empty.style.cssText = 'color:#888; font-size:10px; padding:4px 0;';
@@ -2603,15 +3039,27 @@ function updatePersonLabels() {
                     <div style="color:#888; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escAttr(sub)}</div>
                 </div>
             `;
+            // 이미 등록된 사용자는 비활성 '추가됨' 으로 사전 표시(클릭 전에 식별)
+            const already = existingEmails.has((u.email || '').toLowerCase());
             const addBtn = document.createElement('button');
-            addBtn.textContent = '추가';
-            addBtn.style.cssText = `
-                flex:none; background:#2ecc71; color:#fff; border:none; border-radius:4px;
-                padding:3px 10px; font-family:monospace; font-size:11px; cursor:pointer; font-weight:bold;
-            `;
-            addBtn.onmouseover = () => { if (!addBtn.disabled) addBtn.style.background = '#27ae60'; };
-            addBtn.onmouseout  = () => { if (!addBtn.disabled) addBtn.style.background = '#2ecc71'; };
-            addBtn.onclick = () => addUser(u, addBtn);
+            if (already) {
+                addBtn.textContent = '추가됨';
+                addBtn.disabled = true;
+                addBtn.style.cssText = `
+                    flex:none; background:#3a3a3a; color:#888; border:none; border-radius:4px;
+                    padding:3px 10px; font-family:monospace; font-size:11px; cursor:default;
+                `;
+            } else {
+                addBtn.textContent = '추가';
+                addBtn.style.cssText = `
+                    flex:none; background:#2ecc71; color:#fff; border:none; border-radius:4px;
+                    padding:3px 10px; font-family:monospace; font-size:11px; cursor:pointer; font-weight:bold;
+                `;
+                addBtn.onmouseover = () => { if (!addBtn.disabled) addBtn.style.background = '#27ae60'; };
+                addBtn.onmouseout  = () => { if (!addBtn.disabled) addBtn.style.background = '#2ecc71'; };
+                addBtn.onclick = () => addUser(u, addBtn);
+                if (!firstAddBtn) firstAddBtn = addBtn;   // 첫 미등록 후보 → Enter 대상
+            }
             row.appendChild(addBtn);
             listEl.appendChild(row);
         });
@@ -2643,7 +3091,11 @@ function updatePersonLabels() {
                 return;
             }
             // people-update 브로드캐스트로 아바타가 자동 표시됨
+            existingEmails.add((user.email || '').toLowerCase());   // 이후 렌더서 '추가됨' 유지
             addBtn.textContent = '추가됨';
+            addBtn.style.background = '#3a3a3a';
+            addBtn.style.color = '#888';
+            addBtn.style.cursor = 'default';
         } catch (e) {
             addBtn.disabled = false;
             addBtn.textContent = '추가';

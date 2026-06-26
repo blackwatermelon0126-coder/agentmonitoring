@@ -224,6 +224,105 @@ async function pollOnce({ getPeople, broadcast, accessToken, lastSeen, freshness
     if (changed) saveLastSeen(lastSeen);
 }
 
+// ── 회의(화상회의) 폴링 1 사이클 ──────────────────────────────────
+
+/**
+ * 로그인 사용자(/me)의 캘린더에서 '진행 중인 온라인 회의'를 탐지하여
+ * 등록 인물 아바타를 회의실로 이동시키도록 meeting-status를 broadcast한다.
+ *
+ * 동작:
+ *   1. account(=로그인 사용자)와 매칭되는 people 등록 인물을 찾는다
+ *      (displayName 소문자 일치 또는 username(이메일/UPN) 일치). 없으면 이동 대상 없음 → return.
+ *   2. GET /me/calendarView (now±5분) 로 현재 시각 주변 이벤트를 조회한다.
+ *   3. 그중 isOnlineMeeting && onlineMeeting.joinUrl 가 있고 start<=now<=end 인 회의를 찾는다.
+ *   4. 상태 변화(inMeeting / joinUrl)가 있을 때만 broadcast하여 스팸을 방지한다.
+ *
+ * calendarView 의 start/end.dateTime 은 기본 TZ=UTC 이며 오프셋이 없으므로 'Z'를 붙여 파싱한다.
+ *
+ * @param {object}   opts
+ * @param {() => object[]} opts.getPeople     - people 목록 공급 함수
+ * @param {(msg:object)=>void} opts.broadcast - WebSocket broadcast 함수
+ * @param {string}   opts.accessToken         - Graph access token
+ * @param {object}   opts.account             - 로그인 사용자 account ({ name, username, ... })
+ * @param {object}   opts.meetingState        - personId → { inMeeting, joinUrl } 직전 상태 캐시
+ */
+async function pollMeetingsOnce({ getPeople, broadcast, accessToken, account, meetingState }) {
+    if (!account) return;
+
+    // 1. 로그인 사용자 ↔ 등록 인물 매칭
+    const lower = (s) => (s || '').toLowerCase().trim();
+    const acctName = lower(account.name);          // displayName
+    const acctUser = lower(account.username);       // 이메일/UPN
+
+    const peopleList = getPeople();
+    const me = peopleList.find((p) => {
+        const name  = lower(p.name);
+        const email = lower(p.email);
+        const upn   = lower(p.userPrincipalName);
+        if (acctName && name === acctName) return true;
+        if (acctUser && (email === acctUser || upn === acctUser)) return true;
+        return false;
+    });
+    if (!me) return; // 이동 대상(나) 미등록 → 회의 이동 불가
+
+    // 2. now±5분 calendarView 조회
+    const now = new Date();
+    const startISO = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
+    const endISO   = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
+    const url =
+        `${GRAPH_BASE}/me/calendarView` +
+        `?startDateTime=${encodeURIComponent(startISO)}` +
+        `&endDateTime=${encodeURIComponent(endISO)}` +
+        `&$select=subject,start,end,isOnlineMeeting,onlineMeeting` +
+        `&$orderby=start/dateTime&$top=20`;
+
+    const data = await graphGet(url, accessToken);
+    const events = data.value || [];
+
+    // calendarView dateTime(오프셋 없음, UTC)을 Date로 파싱.
+    // 이미 오프셋(Z 또는 ±hh:mm)이 있으면 그대로, 없으면 'Z'를 붙여 UTC로 해석.
+    const parseGraphDate = (dt) => {
+        if (!dt) return null;
+        const hasOffset = /[zZ]|[+-]\d{2}:?\d{2}$/.test(dt);
+        return new Date(hasOffset ? dt : dt + 'Z');
+    };
+
+    // 3. 진행 중 온라인 회의 탐색
+    let inMeeting = false;
+    let joinUrl = null;
+    let subject = null;
+    for (const ev of events) {
+        if (!ev.isOnlineMeeting) continue;
+        const url = ev.onlineMeeting?.joinUrl;
+        if (!url) continue;
+        const start = parseGraphDate(ev.start?.dateTime);
+        const end   = parseGraphDate(ev.end?.dateTime);
+        if (!start || !end) continue;
+        if (start <= now && now <= end) {
+            inMeeting = true;
+            joinUrl = url;
+            subject = ev.subject || '';
+            break;
+        }
+    }
+
+    // 4. 상태 변화 시에만 broadcast (스팸 방지)
+    const prev = meetingState[me.id];
+    if (prev && prev.inMeeting === inMeeting && prev.joinUrl === joinUrl) {
+        return; // 동일 상태 → skip
+    }
+    meetingState[me.id] = { inMeeting, joinUrl };
+
+    broadcast({
+        type:       'meeting-status',
+        personId:   me.id,
+        personName: me.name,
+        inMeeting,
+        joinUrl,
+        subject,
+    });
+}
+
 // ── 폴링 시작 ─────────────────────────────────────────────────────
 
 /**
