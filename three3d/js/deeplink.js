@@ -30,8 +30,10 @@ export function buildTeamsDeeplink(meta) {
 
     // A: 기존 대화로 직접 이동 — 웹앱 직행 경로(_#) 사용 → 데스크톱 앱 실행 프롬프트 없이 웹으로 열린다.
     // chatId 형식 `19:...@thread.v2` 의 `:`·`@` 를 encodeURIComponent 로 인코딩한다.
+    // tenantId 포함 필수 — 없으면 Teams가 홈으로 리디렉션함.
     if (meta.chatId) {
-        return `${TEAMS_WEB_BASE}/${encodeURIComponent(meta.chatId)}?ctx=chat`;
+        const tid = meta.tenantId ? `&tenantId=${encodeURIComponent(meta.tenantId)}` : '';
+        return `${TEAMS_WEB_BASE}/${encodeURIComponent(meta.chatId)}?ctx=chat${tid}`;
     }
 
     // C: 이메일(UPN)로 1:1 채팅 열기/생성. users=는 UPN(이메일)만 허용.

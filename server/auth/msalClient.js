@@ -64,13 +64,14 @@ const msalConfig = {
 const pca = new PublicClientApplication(msalConfig);
 
 // 필요 권한 범위
+// Calendars.Read — 이 테넌트에서 미동의 상태. Portal에서 관리자 동의 완료 후 재활성화
 const SCOPES = [
     'Chat.Read',
     'Chat.ReadBasic',
-    'Calendars.Read',       // 로그인 사용자의 캘린더(진행 중 온라인 회의) 조회 — 화상회의 이동 기능용
+    // 'Calendars.Read',    // 화상회의 이동 기능용 — 테넌트 관리자 동의 후 재활성화
     'offline_access',
     'User.Read',
-    'User.Read.All',        // 조직 디렉터리 사용자 조회 (formationlabs 멤버) — 조직 사용자 피커용
+    'User.Read.All',        // 조직 사용자 피커용
 ];
 
 // ── 토큰 파일 입출력 ──────────────────────────────────────────────
