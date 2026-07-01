@@ -332,6 +332,7 @@ async function pollMeetingsOnce({ getPeople, broadcast, accessToken, account, me
  */
 function startPolling({ getPeople, broadcast }) {
     const lastSeen = loadLastSeen();
+    const meetingState = {};                          // [G-2] 회의 상태 캐시
 
     const log = (msg, ...args) => console.log(`[TeamsPoller] ${msg}`, ...args);
     const warn = (msg, ...args) => console.warn(`[TeamsPoller] ${msg}`, ...args);
@@ -355,6 +356,13 @@ function startPolling({ getPeople, broadcast }) {
         try {
             log('폴링 시작');
             await pollOnce({ getPeople, broadcast, accessToken, lastSeen });
+            await pollMeetingsOnce({                  // [G-1] 회의 상태 폴링
+                getPeople,
+                broadcast,
+                accessToken,
+                account: cached.account,
+                meetingState,
+            });
             log('폴링 완료');
         } catch (e) {
             if (e.status === 401) {
@@ -364,6 +372,11 @@ function startPolling({ getPeople, broadcast }) {
                     accessToken = await refreshTokenIfNeeded();
                     if (accessToken) {
                         await pollOnce({ getPeople, broadcast, accessToken, lastSeen });
+                        await pollMeetingsOnce({      // [G-1] 재시도에도 회의 폴링
+                            getPeople, broadcast, accessToken,
+                            account: getTokenFromCache()?.account,
+                            meetingState,
+                        });
                     }
                 } catch (retryErr) {
                     warn('재시도 실패:', retryErr.message);
