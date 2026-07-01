@@ -68,6 +68,7 @@ const pca = new PublicClientApplication(msalConfig);
 const SCOPES = [
     'Chat.Read',
     'Chat.ReadBasic',
+    'Chat.ReadWrite',       // 메시지 전송용 — 관리자 동의 완료
     // 'Calendars.Read',    // 화상회의 이동 기능용 — 테넌트 관리자 동의 후 재활성화
     'offline_access',
     'User.Read',
