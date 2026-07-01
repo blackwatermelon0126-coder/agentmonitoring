@@ -6,13 +6,22 @@ export default [
   prettierConfig,
   {
     languageOptions: {
-      ecmaVersion: 2021,
+      ecmaVersion: 2022, // top-level await(테스트의 await import) 허용
       sourceType: 'module',
       globals: {
-        // Node.js globals
+        // Node.js / Web 표준 globals
         process: 'readonly',
-        setTimeout: 'readonly',
+        global: 'readonly',
         console: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        setImmediate: 'readonly',
       },
     },
     rules: {

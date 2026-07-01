@@ -7,8 +7,9 @@ import { fileURLToPath } from 'url';
 import pino from 'pino';
 import { ROLES, ROLE_NAMES } from './shared/roles.js';
 import { loadRecentEntries, appendEntry, ACTIVITY_LIMIT as _ACTIVITY_LIMIT } from './activity-log.js';
-import { getDeviceCodeUrl, getAuthStatus, refreshTokenIfNeeded } from './auth/msalClient.js';
+import { getDeviceCodeUrl, getAuthStatus, refreshTokenIfNeeded, getTokenFromCache } from './auth/msalClient.js';
 import { startPolling, graphGet, GRAPH_BASE } from './teams/teamsPoller.js';
+import { listChats, getMessages, sendMessage } from './teams/chatService.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 
@@ -429,6 +430,75 @@ app.get('/api/org-users', async (req, res) => {
     } catch (err) {
         const status = err.status || 500;
         logger.warn({ event: 'org_users_error', status, err: err.message }, 'GET /api/org-users failed');
+        res.status(status).json({ error: 'graph_error', status, reason: err.message });
+    }
+});
+
+// ── 인앱 Teams 채팅 API (CHAT-01) ────────────────────────────────
+//
+// 3D 오피스 안에서 Teams 채팅 목록·읽기·전송을 제공한다(chatService 위임).
+//   GET  /api/chats                     → 내 채팅방 목록
+//   GET  /api/chats/:chatId/messages    → 채팅 메시지 읽기
+//   POST /api/chats/:chatId/messages    → 메시지 전송 (requireLoopback)
+//
+// 관례: /api/org-users 와 동일 — refreshTokenIfNeeded 로 토큰 확보(없으면 401),
+//       Graph 오류는 상태코드 그대로 전파. 조회는 제한 없음, 전송은 외부 비가역 호출이라 requireLoopback.
+
+/**
+ * 로그인 사용자 식별자(자기 자신 제외·isMine 판정용)를 토큰 캐시에서 얻는다.
+ * @returns {{ id: string, username: string }}
+ */
+function getMe() {
+    const acct = getTokenFromCache()?.account || {};
+    return { id: acct.localAccountId || '', username: acct.username || '' };
+}
+
+/** GET /api/chats — 내 채팅방 목록 */
+app.get('/api/chats', async (req, res) => {
+    const accessToken = await refreshTokenIfNeeded();
+    if (!accessToken) return res.status(401).json({ error: 'not_authenticated' });
+    try {
+        const chats = await listChats(accessToken, getMe());
+        res.json(chats);
+    } catch (err) {
+        const status = err.status || 500;
+        logger.warn({ event: 'chats_list_error', status, err: err.message }, 'GET /api/chats failed');
+        res.status(status).json({ error: 'graph_error', status, reason: err.message });
+    }
+});
+
+/** GET /api/chats/:chatId/messages — 채팅 메시지 읽기 (limit 기본 20·최대 50) */
+app.get('/api/chats/:chatId/messages', async (req, res) => {
+    const accessToken = await refreshTokenIfNeeded();
+    if (!accessToken) return res.status(401).json({ error: 'not_authenticated' });
+    try {
+        const messages = await getMessages(accessToken, req.params.chatId, {
+            limit: req.query.limit,
+            myId: getMe().id,
+        });
+        res.json(messages);
+    } catch (err) {
+        const status = err.status || 500;
+        logger.warn({ event: 'chat_messages_error', status, err: err.message }, 'GET /api/chats/:id/messages failed');
+        res.status(status).json({ error: 'graph_error', status, reason: err.message });
+    }
+});
+
+/** POST /api/chats/:chatId/messages — 메시지 전송 (requireLoopback) */
+app.post('/api/chats/:chatId/messages', requireLoopback, async (req, res) => {
+    const text = (req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'empty_message' });
+    if (text.length > 4000) return res.status(400).json({ error: 'message_too_long' });
+
+    const accessToken = await refreshTokenIfNeeded();
+    if (!accessToken) return res.status(401).json({ error: 'not_authenticated' });
+    try {
+        const created = await sendMessage(accessToken, req.params.chatId, text);
+        logger.info({ event: 'chat_message_sent', chatId: req.params.chatId }, 'Chat message sent');
+        res.status(201).json(created);
+    } catch (err) {
+        const status = err.status || 500;
+        logger.warn({ event: 'chat_send_error', status, err: err.message }, 'POST /api/chats/:id/messages failed');
         res.status(status).json({ error: 'graph_error', status, reason: err.message });
     }
 });

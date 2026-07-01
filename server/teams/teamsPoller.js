@@ -62,6 +62,32 @@ async function graphGet(url, accessToken) {
     return res.json();
 }
 
+/**
+ * Graph API JSON POST 헬퍼 (graphGet 의 쓰기 버전).
+ * 메시지 전송 등 생성 호출에 사용한다. graphGet 과 동일하게 실패 시 err.status 를 세팅해 throw 한다.
+ *
+ * @param {string} url         - Graph 엔드포인트 URL
+ * @param {string} accessToken - Bearer access token
+ * @param {object} body        - 전송할 JSON 본문
+ * @returns {Promise<object>}  - 생성된 리소스 JSON
+ */
+async function graphPost(url, accessToken, body) {
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+        const err = new Error(`Graph API ${res.status}: ${url}`);
+        err.status = res.status;
+        throw err;
+    }
+    return res.json();
+}
+
 // ── 폴링 1 사이클 ─────────────────────────────────────────────────
 
 async function pollOnce({ getPeople, broadcast, accessToken, lastSeen, freshnessMs = 90_000 }) {
@@ -395,4 +421,4 @@ function startPolling({ getPeople, broadcast }) {
     log('폴링 등록 완료 (간격: 15초)');
 }
 
-export { startPolling, pollOnce, pollMeetingsOnce, graphGet, GRAPH_BASE, TENANT_ID };
+export { startPolling, pollOnce, pollMeetingsOnce, graphGet, graphPost, GRAPH_BASE, TENANT_ID };

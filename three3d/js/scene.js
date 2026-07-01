@@ -10,6 +10,7 @@ import { createWarehouse, updateWarehouse } from './warehouse.js';
 import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
 import { initLunchGame, triggerLunchGame } from './lunchgame.js';
+import { initChatPanel, openChat, handleTeamsNotification } from './chat-panel.js';
 
 
 // ---- 캐릭터 특성 풀 ----
@@ -2830,17 +2831,23 @@ function showTeamsNotification3D(data) {
     // 기존 말풍선 제거
     if (av.bubbleEl) { av.bubbleEl.remove(); av.bubbleEl = null; }
 
-    const bel = makeBubbleEl(preview, !!url);
+    // CHAT-01(D-2): 말풍선 클릭 → 인앱 채팅 열기. chatId 있으면 인앱, 없으면 외부 Teams 딥링크로 폴백.
+    const canChat = !!meta.chatId;
+    const bel = makeBubbleEl(preview, canChat || !!url);
     av.bubbleEl = bel;
 
-    // 딥링크 가능하면 click 리스너 등록 → 새 탭으로 Teams 채팅 오픈.
-    if (url) {
+    if (canChat || url) {
         bel.addEventListener('click', (event) => {
             // 카메라 컨트롤(OrbitControls) 전파 차단
             event.stopPropagation();
-            // 클릭 시점에 최신 메타로 재계산(메시지 갱신 대비)
-            const target = buildTeamsDeeplink(av.deeplinkMeta);
-            if (target) window.open(target, '_blank', 'noopener');
+            if (av.deeplinkMeta && av.deeplinkMeta.chatId) {
+                // 인앱 채팅 오버레이 오픈
+                openChat(av.deeplinkMeta.chatId, av.displayName || msg.senderName || '채팅');
+            } else {
+                // 폴백: 클릭 시점 최신 메타로 딥링크 재계산 → 새 탭 Teams 오픈
+                const target = buildTeamsDeeplink(av.deeplinkMeta);
+                if (target) window.open(target, '_blank', 'noopener');
+            }
         });
     }
 
@@ -3303,6 +3310,7 @@ function connectWS() {
             syncPersonAvatars(d.people);
         } else if (d.type === 'teams-notification') {
             showTeamsNotification3D(d);
+            handleTeamsNotification(d);   // CHAT-01: 열린 채팅창 즉시 갱신·닫힌 방 안읽음 배지
         } else if (d.type === 'meeting-status') {
             handleMeetingStatus(d);
         }
@@ -3310,6 +3318,9 @@ function connectWS() {
     ws.onclose = () => { document.getElementById('conn-status').textContent = 'Reconnecting...'; document.getElementById('conn-status').style.color = '#f00'; setTimeout(connectWS, 3000); };
 }
 connectWS();
+
+// ---- 인앱 Teams 채팅 UI 초기화 (CHAT-01) ----
+initChatPanel({ apiBase: `http://${location.hostname}:3300` });
 
 // ---- 점심 게임 초기화 ----
 initLunchGame({
