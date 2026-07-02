@@ -90,7 +90,7 @@ export function createICharacter(color) {
 export function createWatermelonCharacter() {
     const group = new THREE.Group();
     const RIND   = 0x0a2e12;   // 겉껍질(짙은 녹색 — 검은수박)
-    const STRIPE = 0x03160a;   // 줄무늬(거의 검정)
+    const STRIPE = 0xF4D03F;   // 줄무늬·팔다리(노랑)
     const FLESH  = 0xE0566A;   // 손·발·코(수박 속살 핑크)
     const rindMat   = new THREE.MeshStandardMaterial({ color: RIND,   roughness: 0.5 });
     const stripeMat = new THREE.MeshStandardMaterial({ color: STRIPE, roughness: 0.5 });
@@ -161,7 +161,7 @@ export function createWatermelonCharacter() {
     // 가는 긴 팔 (손목 → 손)
     function arm(side) {
         const g = new THREE.Group();
-        const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.038, 0.78, 10), rindMat);
+        const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.038, 0.78, 10), stripeMat);
         upper.position.y = -0.39;
         g.add(upper);
         const hand = makeHand();
@@ -178,7 +178,7 @@ export function createWatermelonCharacter() {
     // 가는 긴 다리 + 발
     function leg(x) {
         const g = new THREE.Group();
-        const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.98, 10), rindMat);
+        const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.98, 10), stripeMat);
         shin.position.y = 0.49;
         g.add(shin);
         const foot = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 10), fleshMat);
