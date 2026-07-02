@@ -21,6 +21,7 @@ const POLL_INTERVAL_MS = 8000;
 // ── 모듈 상태 ─────────────────────────────────────────────────────
 let API_BASE = '';
 let listEl = null;        // 방 목록 컨테이너
+let searchEl = null;      // 방 검색 입력창
 let windowEl = null;      // 채팅창 컨테이너
 let msgAreaEl = null;     // 메시지 스크롤 영역
 let inputEl = null;       // 입력창
@@ -79,8 +80,23 @@ function setListStatus(msg) {
 
 function renderChatList() {
     if (!listEl) return;
+    // 검색: 채팅방 명칭(title) 또는 멤버 이름(memberNames)으로 필터 (대소문자 무시)
+    const q = ((searchEl && searchEl.value) || '').toLowerCase().trim();
+    const filtered = q
+        ? chats.filter((c) =>
+            (c.title || '').toLowerCase().includes(q)
+            || (c.memberNames || []).some((n) => (n || '').toLowerCase().includes(q)))
+        : chats;
+
     listEl.innerHTML = '';
-    chats.forEach((c) => {
+    if (filtered.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:#888; font-size:10px; padding:6px 0;';
+        empty.textContent = q ? '검색 결과 없음' : '채팅방이 없습니다.';
+        listEl.appendChild(empty);
+        return;
+    }
+    filtered.forEach((c) => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; border-top:1px solid #2a2a2a; cursor:pointer;';
         const n = unread.get(c.chatId) || 0;
@@ -272,9 +288,21 @@ export function initChatPanel({ apiBase }) {
         <span style="text-transform:uppercase; letter-spacing:1px; color:#888;">채팅방</span>
         <span id="chat-refresh" title="새로고침" style="color:#aaa; cursor:pointer;">⟳</span>
     `;
+    // 검색창 — 채팅방 명칭·멤버 이름 필터 (org-picker 스타일과 일관)
+    searchEl = document.createElement('input');
+    searchEl.type = 'text';
+    searchEl.placeholder = '채팅방·이름 검색…';
+    searchEl.style.cssText = `
+        background:rgba(255,255,255,0.06); color:#fff; border:1px solid #333;
+        border-radius:4px; padding:5px 8px; font-family:monospace; font-size:11px;
+        outline:none; margin-bottom:8px;
+    `;
+    searchEl.addEventListener('input', () => renderChatList());
+
     listEl = document.createElement('div');
     listEl.style.cssText = 'overflow-y:auto; min-height:0; max-height:44vh; scrollbar-width:thin; scrollbar-color:#444 transparent;';
     panel.appendChild(header);
+    panel.appendChild(searchEl);
     panel.appendChild(listEl);
 
     // 채팅창
