@@ -66,6 +66,8 @@ MS Graph API(Device Code Flow)로 Teams를 3D 오피스에 연동한다. 최초 
   - **채팅방 검색**: 사이드패널 검색창에서 채팅방 명칭·멤버 이름으로 필터.
 - **조직 사용자 피커**: `GET /api/org-users` 로 조직 사용자를 불러와 아바타로 추가. `@odata.nextLink` 페이지네이션을 따라 **전체 사용자**를 조회한다(999명 초과 테넌트에서 누락 방지).
 - **Windows 데스크톱 알림** (`three3d/js/notifications.js`): 채팅·에이전트 완료·회의 등 이벤트를 **카테고리별 OS 토스트**로 알림. 알림 클릭 시 METAOFFICE 창 포커스 + **기능 연결**(채팅→채팅창 열기, 회의→해당 인물로 카메라 이동). 최초 1회 브라우저 알림 권한 허용 필요(localhost=보안 컨텍스트).
+- **Azure 조직 로그인** (`three3d/js/auth-ui.js`): 앱 진입 시 전체화면 로그인 게이트(Device Code Flow). 로그인하면 `GET /api/me` 프로필로 **본인이 조직 피커 없이 자동 아바타 등록**(`ensureSelfAvatar`).
+- **ZEPHONI 캐릭터**: ZEPHONI(=ADK) 아바타는 'i' 문자 형태(`character.js` `createICharacter`) — 나머지는 상세 휴먼. ADK 에이전트 완료 알림은 `agent` 카테고리(💬"ZEPHONI ADK — {role} 완료")로 표시.
 
 ## Claude Code Hook 연동 (Phase 2 예정)
 

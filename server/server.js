@@ -441,6 +441,28 @@ app.get('/api/org-users', async (req, res) => {
     }
 });
 
+// ── 로그인 사용자 프로필 (자동 아바타용) ─────────────────────────
+//
+// 로그인(Device Code) 후 프론트가 이 API로 본인 프로필을 받아, 조직 피커로 추가하지 않아도
+// 자동으로 아바타(people)로 등록한다. Graph GET /me (User.Read 로 동작).
+
+/** GET /api/me — 로그인 사용자 프로필 { displayName, email } */
+app.get('/api/me', async (req, res) => {
+    const accessToken = await refreshTokenIfNeeded();
+    if (!accessToken) return res.status(401).json({ error: 'not_authenticated' });
+    try {
+        const u = await graphGet(`${GRAPH_BASE}/me?$select=displayName,mail,userPrincipalName`, accessToken);
+        res.json({
+            displayName: u.displayName || u.userPrincipalName || '',
+            email:       u.mail || u.userPrincipalName || '',
+        });
+    } catch (err) {
+        const status = err.status || 500;
+        logger.warn({ event: 'me_error', status, err: err.message }, 'GET /api/me failed');
+        res.status(status).json({ error: 'graph_error', status, reason: err.message });
+    }
+});
+
 // ── 인앱 Teams 채팅 API (CHAT-01) ────────────────────────────────
 //
 // 3D 오피스 안에서 Teams 채팅 목록·읽기·전송을 제공한다(chatService 위임).

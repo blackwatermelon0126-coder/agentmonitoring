@@ -47,6 +47,39 @@ export function traitsFromSeed(seed, shirtColor) {
     };
 }
 
+/**
+ * "i" 문자 형태의 미니멀 캐릭터 (ZEPHONI 전용).
+ * 소문자 i 처럼 — 세로 획(원기둥 몸통) 위에 점(구체 머리)을 띄운 형태 + 바닥 받침.
+ * createDetailedPerson 과 동일하게 { group } 을 반환하므로 아바타 파이프라인(pickMeshes·badge·label)에 그대로 얹힌다.
+ *
+ * @param {number} color - 대표 색상 (0xRRGGBB) — person.color 반영
+ * @returns {{ group: THREE.Group }}
+ */
+export function createICharacter(color) {
+    const group = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.15 });
+
+    // 바닥 받침 (원반)
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 0.09, 20), mat);
+    base.position.y = 0.045;
+    base.castShadow = true; base.receiveShadow = true;
+    group.add(base);
+
+    // 세로 획 (몸통) — 얇은 원기둥
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 1.25, 18), mat);
+    body.position.y = 0.72;
+    body.castShadow = true;
+    group.add(body);
+
+    // 점(dot) = 머리 — 몸통 위 약간 띄워 'i' 느낌
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 22, 18), mat);
+    head.position.y = 1.78;
+    head.castShadow = true;
+    group.add(head);
+
+    return { group };
+}
+
 export function createDetailedPerson(traits) {
     const { gender, skinColor, hairColor, shirtColor, pantsColor, shoeColor, hairStyle } = traits;
     const group = new THREE.Group();

@@ -7,11 +7,12 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createFactory, updateFactory } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
-import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed } from './character.js';
+import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, createICharacter } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
 import { initLunchGame, triggerLunchGame } from './lunchgame.js';
 import { initChatPanel, openChat, handleTeamsNotification, isChatOpen } from './chat-panel.js';
 import { initNotifications, notify } from './notifications.js';
+import { initAuthGate } from './auth-ui.js';
 
 
 // ---- 캐릭터 특성 풀 ----
@@ -2721,7 +2722,11 @@ function createPersonAvatar(person) {
 
     // 상세 캐릭터 모델 — person.id 해시로 외형(피부·머리색·헤어스타일·성별)을 결정적 다양화.
     // 같은 id 는 항상 같은 외형 → 새로고침·재접속에도 일관. 셔츠색만 person.color 반영(바지·신발 고정).
-    const personObj = createDetailedPerson(traitsFromSeed(person.id, color));
+    // 단, ZEPHONI(=ADK) 캐릭터는 'i' 문자 형태로 특별 렌더.
+    const isZephoni = (person.name || '').trim().toUpperCase() === 'ZEPHONI';
+    const personObj = isZephoni
+        ? createICharacter(color)
+        : createDetailedPerson(traitsFromSeed(person.id, color));
     const group = personObj.group;
     group.scale.set(0.9, 0.9, 0.9);   // 계단 에이전트와 동일 스케일
 
@@ -3327,7 +3332,7 @@ function connectWS() {
             const now = d.state && d.state.status;
             // working → idle 전이 = 에이전트 작업 완료 → OS 알림
             if (prev === 'working' && now === 'idle') {
-                notify('agent', `${(d.state && d.state.role) || d.agent} 완료`, '에이전트가 작업을 마쳤습니다.', { tag: `agent-${d.agent}` });
+                notify('agent', `ZEPHONI ADK — ${(d.state && d.state.role) || d.agent} 완료`, '에이전트가 작업을 마쳤습니다.', { tag: `agent-${d.agent}` });
             }
             _lastAgentStatus[d.agent] = now;
         } else if (d.type === 'people-update') {
@@ -3362,6 +3367,25 @@ initChatPanel({ apiBase: `http://${location.hostname}:3300` });
 
 // ---- Windows(OS) 데스크톱 알림 초기화 (chat/agent/meeting/system, 클릭 시 기능 연결) ----
 initNotifications();
+
+// ---- Azure 조직 로그인 게이트 + 로그인 사용자 자동 아바타 ----
+// 로그인(Device Code) 완료 시, 조직 피커로 추가하지 않아도 본인을 아바타로 자동 등록한다.
+async function ensureSelfAvatar() {
+    try {
+        const base = `http://${location.hostname}:3300`;
+        const me = await fetch(`${base}/api/me`).then((r) => (r.ok ? r.json() : null));
+        if (!me || !me.email) return;
+        const people = await fetch(`${base}/api/people`).then((r) => r.json()).catch(() => []);
+        const exists = Array.isArray(people) && people.some((p) => (p.email || '').toLowerCase() === me.email.toLowerCase());
+        if (exists) return;
+        await fetch(`${base}/api/people`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: me.displayName || me.email, email: me.email, color: '#00B7C3' }),
+        });
+        // people-update 브로드캐스트로 아바타가 자동 표시됨
+    } catch { /* noop */ }
+}
+initAuthGate({ apiBase: `http://${location.hostname}:3300`, onAuthenticated: ensureSelfAvatar });
 
 // ---- 점심 게임 초기화 ----
 initLunchGame({
