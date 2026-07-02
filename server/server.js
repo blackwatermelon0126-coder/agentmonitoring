@@ -414,11 +414,18 @@ app.get('/api/org-users', async (req, res) => {
         return res.status(401).json({ error: 'not_authenticated' });
     }
     try {
-        const data = await graphGet(
-            `${GRAPH_BASE}/users?$select=displayName,mail,userPrincipalName,jobTitle&$top=999`,
-            accessToken
-        );
-        const users = (data.value || [])
+        // 전체 사용자 페이지네이션 수집 — @odata.nextLink 를 따라 모든 페이지 조회.
+        // (테넌트 사용자가 999명을 넘으면 첫 페이지만 보던 기존 방식은 조직 사용자를 누락시킨다)
+        let url = `${GRAPH_BASE}/users?$select=displayName,mail,userPrincipalName,jobTitle&$top=999`;
+        let raw = [];
+        let guard = 0;
+        while (url && guard < 50) {
+            const data = await graphGet(url, accessToken);
+            raw = raw.concat(data.value || []);
+            url = data['@odata.nextLink'] || null;   // 다음 페이지 링크(없으면 종료)
+            guard++;                                  // 안전장치(최대 50페이지)
+        }
+        const users = raw
             .filter(u => u.mail && u.mail.toLowerCase().endsWith(ORG_EMAIL_DOMAIN))
             .map(u => ({
                 displayName: u.displayName || '',

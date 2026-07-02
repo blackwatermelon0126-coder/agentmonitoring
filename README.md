@@ -45,8 +45,26 @@ curl -X POST http://localhost:3300/demo
 | `POST /demo` | 랜덤 에이전트 활동 데모 |
 | `GET /api/status` | 현재 에이전트 상태 조회 |
 | `GET /api/roles` | 역할 목록 조회 |
-| `POST /hook/tool-use` | Claude Code Hook 수신 (Phase 2 활성화 예정) |
+| `POST /hook/tool-use` | Claude Code Hook 수신 |
 | `POST /hook/tool-done` | Claude Code Hook 완료 수신 |
+| `GET /auth/start` · `GET /auth/status` | MS Graph Device Code 인증 시작 · 상태 |
+| `GET /api/org-users` | 조직 사용자 목록 (아바타 피커용, formationlabs 도메인) |
+| `GET`·`POST`·`PUT`·`DELETE /api/people` | 사람 아바타 CRUD |
+| `GET /api/chats` | 내 Teams 채팅방 목록 |
+| `GET /api/chats/:chatId/messages` | 채팅 메시지 읽기 |
+| `POST /api/chats/:chatId/messages` | 채팅 메시지 전송 (requireLoopback) |
+
+> 채팅 API 3종의 상세 계약(필드·에러)은 [`server/docs/API_CONTRACT.md`](server/docs/API_CONTRACT.md) §7 참조.
+
+## Microsoft Teams 연동 (Presence · 회의 · 인앱 채팅)
+
+MS Graph API(Device Code Flow)로 Teams를 3D 오피스에 연동한다. 최초 1회 `http://localhost:3300/auth/start` 에서 Device Code 로그인 필요(scope: `Chat.Read`·`Chat.ReadBasic`·`Chat.ReadWrite`·`User.Read.All`).
+
+- **Presence/알림**: 15초 폴링으로 신규 메시지 감지 → 아바타 위 말풍선(`teams-notification` WS broadcast).
+- **화상회의 이동**: 회의 중인 인물 아바타를 리조트 회의실로 이동(`meeting-status`).
+- **인앱 채팅** (`three3d/js/chat-panel.js`): 우하단 **💬 채팅** 런처 → 사이드패널 방 목록 → 채팅창(읽기·전송). 열린 창 8초 폴링 + `teams-notification` WS로 실시간 갱신, 아바타 말풍선 클릭 시 해당 채팅 인앱 오픈.
+  - **채팅방 검색**: 사이드패널 검색창에서 채팅방 명칭·멤버 이름으로 필터.
+- **조직 사용자 피커**: `GET /api/org-users` 로 조직 사용자를 불러와 아바타로 추가. `@odata.nextLink` 페이지네이션을 따라 **전체 사용자**를 조회한다(999명 초과 테넌트에서 누락 방지).
 
 ## Claude Code Hook 연동 (Phase 2 예정)
 
