@@ -98,16 +98,19 @@ export function createWatermelonCharacter() {
     const whiteMat  = new THREE.MeshStandardMaterial({ color: 0xffffff });
     const blackMat  = new THREE.MeshBasicMaterial({ color: 0x111111 });
 
-    const R = 0.7;
+    // 일반 아바타(머리 top ≈ 1.8)와 비슷한 전체 크기 — 몸통은 작게, 팔다리는 가늘고 길게.
+    const R = 0.42;
+    const BODY_Y = 1.4;
+
     // 몸통 = 수박(구체)
-    const body = new THREE.Mesh(new THREE.SphereGeometry(R, 28, 22), rindMat);
-    body.position.y = 1.75;
+    const body = new THREE.Mesh(new THREE.SphereGeometry(R, 26, 20), rindMat);
+    body.position.y = BODY_Y;
     body.castShadow = true;
     group.add(body);
 
     // 세로 줄무늬(경선) — XY평면 토러스를 Y축 회전으로 배치
     for (let i = 0; i < 6; i++) {
-        const ring = new THREE.Mesh(new THREE.TorusGeometry(R, 0.035, 8, 48), stripeMat);
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(R, 0.022, 8, 44), stripeMat);
         ring.rotation.y = (i / 6) * Math.PI;
         body.add(ring);
     }
@@ -115,60 +118,78 @@ export function createWatermelonCharacter() {
     // 눈(흰자+검은자) — 정면(+z)
     function eye(x) {
         const g = new THREE.Group();
-        const white = new THREE.Mesh(new THREE.SphereGeometry(0.11, 14, 12), whiteMat);
-        const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 10), blackMat);
-        pupil.position.z = 0.08;
+        const white = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 10), whiteMat);
+        const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 8), blackMat);
+        pupil.position.z = 0.05;
         g.add(white); g.add(pupil);
-        g.position.set(x, 0.18, R - 0.02);
+        g.position.set(x, 0.11, R - 0.015);
         return g;
     }
-    body.add(eye(-0.24));
-    body.add(eye(0.24));
+    body.add(eye(-0.15));
+    body.add(eye(0.15));
 
     // 코 — 작은 원뿔(정면 돌출)
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.16, 12), fleshMat);
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.1, 12), fleshMat);
     nose.rotation.x = Math.PI / 2;
-    nose.position.set(0, 0.0, R + 0.02);
+    nose.position.set(0, 0.0, R + 0.015);
     body.add(nose);
 
     // 입 — 반원 토러스(미소)
-    const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.028, 8, 24, Math.PI), blackMat);
+    const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.018, 8, 20, Math.PI), blackMat);
     mouth.rotation.z = Math.PI;
-    mouth.position.set(0, -0.22, R - 0.01);
+    mouth.position.set(0, -0.14, R - 0.005);
     body.add(mouth);
 
-    // 긴 팔 — 몸통 옆에서 아래로, 손(핑크 구체)
+    // 손 — 납작한 손바닥 + 손가락4 + 엄지 (가늘게, 손바닥·손가락이 보이도록)
+    function makeHand() {
+        const hand = new THREE.Group();
+        const palm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.13, 0.04), fleshMat);
+        hand.add(palm);
+        for (let i = 0; i < 4; i++) {
+            const f = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.1, 0.03), fleshMat);
+            f.position.set(-0.039 + i * 0.026, -0.115, 0);
+            hand.add(f);
+        }
+        const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.07, 0.03), fleshMat);
+        thumb.position.set(0.08, -0.02, 0);
+        thumb.rotation.z = 0.7;
+        hand.add(thumb);
+        hand.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        return hand;
+    }
+
+    // 가는 긴 팔 (손목 → 손)
     function arm(side) {
         const g = new THREE.Group();
-        const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.3, 12), rindMat);
-        upper.position.y = -0.65;
+        const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.038, 0.78, 10), rindMat);
+        upper.position.y = -0.39;
         g.add(upper);
-        const hand = new THREE.Mesh(new THREE.SphereGeometry(0.13, 14, 12), fleshMat);
-        hand.position.y = -1.35;
+        const hand = makeHand();
+        hand.position.y = -0.84;
         g.add(hand);
-        g.position.set(side * (R + 0.02), 1.95, 0);
-        g.rotation.z = side * 0.25;
+        g.position.set(side * (R - 0.02), 1.52, 0);
+        g.rotation.z = side * 0.22;
         g.traverse(o => { if (o.isMesh) o.castShadow = true; });
         return g;
     }
     group.add(arm(-1));
     group.add(arm(1));
 
-    // 긴 다리 — 몸통 아래에서 바닥까지, 발(핑크 구체)
+    // 가는 긴 다리 + 발
     function leg(x) {
         const g = new THREE.Group();
-        const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.5, 12), rindMat);
-        shin.position.y = 0.75;
+        const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.98, 10), rindMat);
+        shin.position.y = 0.49;
         g.add(shin);
-        const foot = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 12), fleshMat);
-        foot.position.y = 0.05;
+        const foot = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 10), fleshMat);
+        foot.position.y = 0.04;
         g.add(foot);
         g.position.set(x, 0, 0);
         g.traverse(o => { if (o.isMesh) o.castShadow = true; });
         return g;
     }
-    group.add(leg(-0.22));
-    group.add(leg(0.22));
+    group.add(leg(-0.15));
+    group.add(leg(0.15));
 
     return { group };
 }
