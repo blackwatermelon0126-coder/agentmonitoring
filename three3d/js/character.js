@@ -80,6 +80,99 @@ export function createICharacter(color) {
     return { group };
 }
 
+/**
+ * "검은수박" 캐릭터 (특정 사용자 전용, 요청: 102450@CTR.CO.KR).
+ * 짙은 녹색 수박 몸통 + 세로 줄무늬 + 눈·코·입 + 긴 팔다리(손발은 수박 속살 핑크).
+ * createDetailedPerson 과 동일하게 { group } 을 반환한다.
+ *
+ * @returns {{ group: THREE.Group }}
+ */
+export function createWatermelonCharacter() {
+    const group = new THREE.Group();
+    const RIND   = 0x0a2e12;   // 겉껍질(짙은 녹색 — 검은수박)
+    const STRIPE = 0x03160a;   // 줄무늬(거의 검정)
+    const FLESH  = 0xE0566A;   // 손·발·코(수박 속살 핑크)
+    const rindMat   = new THREE.MeshStandardMaterial({ color: RIND,   roughness: 0.5 });
+    const stripeMat = new THREE.MeshStandardMaterial({ color: STRIPE, roughness: 0.5 });
+    const fleshMat  = new THREE.MeshStandardMaterial({ color: FLESH,  roughness: 0.5 });
+    const whiteMat  = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    const blackMat  = new THREE.MeshBasicMaterial({ color: 0x111111 });
+
+    const R = 0.7;
+    // 몸통 = 수박(구체)
+    const body = new THREE.Mesh(new THREE.SphereGeometry(R, 28, 22), rindMat);
+    body.position.y = 1.75;
+    body.castShadow = true;
+    group.add(body);
+
+    // 세로 줄무늬(경선) — XY평면 토러스를 Y축 회전으로 배치
+    for (let i = 0; i < 6; i++) {
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(R, 0.035, 8, 48), stripeMat);
+        ring.rotation.y = (i / 6) * Math.PI;
+        body.add(ring);
+    }
+
+    // 눈(흰자+검은자) — 정면(+z)
+    function eye(x) {
+        const g = new THREE.Group();
+        const white = new THREE.Mesh(new THREE.SphereGeometry(0.11, 14, 12), whiteMat);
+        const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 10), blackMat);
+        pupil.position.z = 0.08;
+        g.add(white); g.add(pupil);
+        g.position.set(x, 0.18, R - 0.02);
+        return g;
+    }
+    body.add(eye(-0.24));
+    body.add(eye(0.24));
+
+    // 코 — 작은 원뿔(정면 돌출)
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.16, 12), fleshMat);
+    nose.rotation.x = Math.PI / 2;
+    nose.position.set(0, 0.0, R + 0.02);
+    body.add(nose);
+
+    // 입 — 반원 토러스(미소)
+    const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.028, 8, 24, Math.PI), blackMat);
+    mouth.rotation.z = Math.PI;
+    mouth.position.set(0, -0.22, R - 0.01);
+    body.add(mouth);
+
+    // 긴 팔 — 몸통 옆에서 아래로, 손(핑크 구체)
+    function arm(side) {
+        const g = new THREE.Group();
+        const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.3, 12), rindMat);
+        upper.position.y = -0.65;
+        g.add(upper);
+        const hand = new THREE.Mesh(new THREE.SphereGeometry(0.13, 14, 12), fleshMat);
+        hand.position.y = -1.35;
+        g.add(hand);
+        g.position.set(side * (R + 0.02), 1.95, 0);
+        g.rotation.z = side * 0.25;
+        g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        return g;
+    }
+    group.add(arm(-1));
+    group.add(arm(1));
+
+    // 긴 다리 — 몸통 아래에서 바닥까지, 발(핑크 구체)
+    function leg(x) {
+        const g = new THREE.Group();
+        const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.5, 12), rindMat);
+        shin.position.y = 0.75;
+        g.add(shin);
+        const foot = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 12), fleshMat);
+        foot.position.y = 0.05;
+        g.add(foot);
+        g.position.set(x, 0, 0);
+        g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        return g;
+    }
+    group.add(leg(-0.22));
+    group.add(leg(0.22));
+
+    return { group };
+}
+
 export function createDetailedPerson(traits) {
     const { gender, skinColor, hairColor, shirtColor, pantsColor, shoeColor, hairStyle } = traits;
     const group = new THREE.Group();

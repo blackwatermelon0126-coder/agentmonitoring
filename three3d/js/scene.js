@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createFactory, updateFactory } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
-import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, createICharacter } from './character.js';
+import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, createICharacter, createWatermelonCharacter } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
 import { initLunchGame, triggerLunchGame } from './lunchgame.js';
 import { initChatPanel, openChat, handleTeamsNotification, isChatOpen } from './chat-panel.js';
@@ -2717,16 +2717,28 @@ function scenePosToPerson(sceneX, sceneZ) {
  * 상세 캐릭터를 만든다. person.color 는 셔츠 색에 반영한다.
  * person.position {x, y} 가 있으면 3D 씬 위치에 반영(2D y → 3D z), 없으면 격자 기본 배치.
  */
+// 특정 사용자 → 검은수박 캐릭터 (요청: 102450@CTR.CO.KR).
+// 로그인 자동아바타는 /api/me(=doohwan.kim@formationlabs.co.kr, 김두환)로 등록되므로 두 식별자를 모두 매칭한다.
+const WATERMELON_IDS = ['102450@ctr.co.kr', 'doohwan.kim@formationlabs.co.kr'];
+function isWatermelon(person) {
+    const e = (person.email || '').toLowerCase().trim();
+    const n = (person.name || '').toLowerCase().trim();
+    return WATERMELON_IDS.includes(e) || WATERMELON_IDS.includes(n)
+        || e.startsWith('102450@ctr') || n.includes('김두환') || n.includes('doohwan');
+}
+
 function createPersonAvatar(person) {
     const color = parseInt((person.color || '#4A90E2').replace('#', ''), 16);
 
     // 상세 캐릭터 모델 — person.id 해시로 외형(피부·머리색·헤어스타일·성별)을 결정적 다양화.
     // 같은 id 는 항상 같은 외형 → 새로고침·재접속에도 일관. 셔츠색만 person.color 반영(바지·신발 고정).
-    // 단, ZEPHONI(=ADK) 캐릭터는 'i' 문자 형태로 특별 렌더.
+    // 특별 캐릭터: ZEPHONI(=ADK)='i' 문자 / 102450@CTR.CO.KR=검은수박 / 나머지=상세 휴먼.
     const isZephoni = (person.name || '').trim().toUpperCase() === 'ZEPHONI';
     const personObj = isZephoni
         ? createICharacter(color)
-        : createDetailedPerson(traitsFromSeed(person.id, color));
+        : isWatermelon(person)
+            ? createWatermelonCharacter()
+            : createDetailedPerson(traitsFromSeed(person.id, color));
     const group = personObj.group;
     group.scale.set(0.9, 0.9, 0.9);   // 계단 에이전트와 동일 스케일
 
