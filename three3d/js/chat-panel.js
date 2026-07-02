@@ -13,8 +13,13 @@
  *   2) teams-notification WS(부) — scene.js 가 handleTeamsNotification 로 전달 → 열린 창 즉시 갱신·닫힌 방 배지
  *
  * 스타일: org-picker 패널과 일관 (rgba(0,0,0,0.6)·monospace·backdrop-blur).
- * 설계 근거: docs/design/_Design/Design_METAOFFICE-CHAT-01.md
+ * 설계 근거: docs/design/_Design/Design_METAOFFICE-CHAT-01.md · MULTIUSER-01 §5(P2: 브라우저 직접 Graph)
+ *
+ * P2: 채팅은 **본인 MSAL 토큰으로 MS Graph 직접 호출**(chat-graph.js) — 서버 단일토큰 미사용(신분 격리).
  */
+
+import { getAccessToken, getAccount } from './auth-msal.js';
+import { listChats as graphListChats, getMessages as graphGetMessages, sendMessage as graphSendMessage } from './chat-graph.js';
 
 const POLL_INTERVAL_MS = 8000;
 
@@ -40,14 +45,10 @@ function esc(s) {
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-async function fetchJSON(path, opts) {
-    const res = await fetch(`${API_BASE}${path}`, opts);
-    if (!res.ok) {
-        const err = new Error(`HTTP ${res.status}`);
-        err.status = res.status;
-        throw err;
-    }
-    return res.json();
+/** 로그인 사용자 식별자(본인 토큰 Graph 호출·isMine용) */
+function getMe() {
+    const a = getAccount();
+    return { id: (a && a.localAccountId) || '', username: (a && a.username) || '' };
 }
 
 function fmtTime(iso) {
@@ -62,14 +63,16 @@ function fmtTime(iso) {
 async function loadChats() {
     setListStatus('채팅방 불러오는 중…');
     try {
-        chats = await fetchJSON('/api/chats');
+        const token = await getAccessToken();
+        if (!token) { setListStatus('로그인이 필요합니다.'); return; }
+        chats = await graphListChats(token, getMe());
         if (!Array.isArray(chats) || chats.length === 0) {
             setListStatus('채팅방이 없습니다.');
             return;
         }
         renderChatList();
     } catch (e) {
-        setListStatus(e.status === 401 ? '인증 필요 (로그인 후 사용)' : `조회 실패 (${e.status || '오류'})`);
+        setListStatus(e.status === 401 ? '인증 필요 (재로그인 후 사용)' : `조회 실패 (${e.status || '오류'})`);
     }
 }
 
@@ -145,7 +148,9 @@ function closeChat() {
 async function loadMessages(initial) {
     if (!openChatId) return;
     try {
-        const msgs = await fetchJSON(`/api/chats/${encodeURIComponent(openChatId)}/messages?limit=30`);
+        const token = await getAccessToken();
+        if (!token) return;
+        const msgs = await graphGetMessages(token, openChatId, { limit: 30, myId: getMe().id });
         if (initial) {
             msgAreaEl.innerHTML = '';
             seenMsgIds = new Set();
@@ -204,11 +209,9 @@ async function sendCurrent() {
     if (!text) return;
     inputEl.disabled = true;
     try {
-        const sent = await fetchJSON(`/api/chats/${encodeURIComponent(openChatId)}/messages`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text }),
-        });
+        const token = await getAccessToken();
+        if (!token) { alert('로그인이 필요합니다 (재로그인 후 사용).'); return; }
+        const sent = await graphSendMessage(token, openChatId, text);
         inputEl.value = '';
         // 전송 성공 응답으로만 append + 중복 방지 (설계 리스크 대응)
         if (sent && sent.id && !seenMsgIds.has(sent.id)) {
