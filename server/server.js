@@ -48,6 +48,8 @@ function requireLoopback(req, res, next) {
 // 정적 파일 서빙 (3D 클라이언트)
 app.use('/3d', express.static(path.join(__dirname, '..', 'three3d')));
 app.use('/3d/libs/three', express.static(path.join(__dirname, '..', 'three3d', 'node_modules', 'three')));
+// MSAL.js(브라우저 개인 로그인) UMD 번들 서빙 — MULTIUSER-01 P1
+app.use('/3d/libs/msal', express.static(path.join(__dirname, '..', 'three3d', 'node_modules', '@azure', 'msal-browser', 'lib')));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });

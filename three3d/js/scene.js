@@ -12,7 +12,7 @@ import { buildTeamsDeeplink } from './deeplink.js';
 import { initLunchGame, triggerLunchGame } from './lunchgame.js';
 import { initChatPanel, openChat, handleTeamsNotification, isChatOpen } from './chat-panel.js';
 import { initNotifications, notify } from './notifications.js';
-import { initAuthGate } from './auth-ui.js';
+import { initAuthGate } from './auth-msal.js';
 
 
 // ---- 캐릭터 특성 풀 ----
@@ -3395,24 +3395,25 @@ initChatPanel({ apiBase: `http://${location.hostname}:3300` });
 // ---- Windows(OS) 데스크톱 알림 초기화 (chat/agent/meeting/system, 클릭 시 기능 연결) ----
 initNotifications();
 
-// ---- Azure 조직 로그인 게이트 + 로그인 사용자 자동 아바타 ----
-// 로그인(Device Code) 완료 시, 조직 피커로 추가하지 않아도 본인을 아바타로 자동 등록한다.
-async function ensureSelfAvatar() {
+// ---- Azure 개인 로그인(MSAL) 게이트 + 로그인 사용자 자동 아바타 ----
+// 로그인 완료 시, 본인 MSAL 계정 프로필로 조직 피커 없이 아바타를 자동 등록한다(서버 /api/me 미의존 — 본인 신분).
+async function ensureSelfAvatar(account) {
     try {
+        const email = (account && account.username) || '';                  // UPN(=이메일 형태)
+        const name  = (account && (account.name || account.username)) || '';
+        if (!email) return;
         const base = `http://${location.hostname}:3300`;
-        const me = await fetch(`${base}/api/me`).then((r) => (r.ok ? r.json() : null));
-        if (!me || !me.email) return;
         const people = await fetch(`${base}/api/people`).then((r) => r.json()).catch(() => []);
-        const exists = Array.isArray(people) && people.some((p) => (p.email || '').toLowerCase() === me.email.toLowerCase());
+        const exists = Array.isArray(people) && people.some((p) => (p.email || '').toLowerCase() === email.toLowerCase());
         if (exists) return;
         await fetch(`${base}/api/people`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: me.displayName || me.email, email: me.email, color: '#00B7C3' }),
+            body: JSON.stringify({ name, email, color: '#00B7C3' }),
         });
         // people-update 브로드캐스트로 아바타가 자동 표시됨
     } catch { /* noop */ }
 }
-initAuthGate({ apiBase: `http://${location.hostname}:3300`, onAuthenticated: ensureSelfAvatar });
+initAuthGate({ onAuthenticated: ensureSelfAvatar });
 
 // ---- 점심 게임 초기화 ----
 initLunchGame({

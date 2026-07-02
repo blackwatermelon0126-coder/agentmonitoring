@@ -23,6 +23,8 @@ npm start
 
 서버 기동 후 `http://localhost:3300` 에서 접속 가능합니다.
 
+> **클라이언트 의존성**: 3D 뷰는 `three`·`@azure/msal-browser`(브라우저 로그인)를 로컬 서빙하므로, 최초 1회 `cd three3d && npm install` 필요(`node_modules` 는 git 미추적).
+
 ### 2. 브라우저 접속
 
 | 뷰 | URL |
