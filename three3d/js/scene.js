@@ -10,7 +10,8 @@ import { createWarehouse, updateWarehouse } from './warehouse.js';
 import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
 import { initLunchGame, triggerLunchGame } from './lunchgame.js';
-import { initChatPanel, openChat, handleTeamsNotification } from './chat-panel.js';
+import { initChatPanel, openChat, handleTeamsNotification, isChatOpen } from './chat-panel.js';
+import { initNotifications, notify } from './notifications.js';
 
 
 // ---- 캐릭터 특성 풀 ----
@@ -3297,22 +3298,59 @@ function updatePersonLabels() {
 })();
 
 // ---- WebSocket ----
+// 에이전트별 직전 상태(working/idle) — working→idle 전이 시 '에이전트 완료' OS 알림용
+const _lastAgentStatus = {};
+
+// 알림 클릭 시 특정 인물 아바타로 카메라를 이동(METAOFFICE 기능 연결)
+function focusAvatar(personId) {
+    const av = personId && personAvatarMap.get(personId);
+    if (!av || !controls || !camera) return;
+    const p = av.group.position;
+    controls.target.set(p.x, p.y + 1.2, p.z);
+    camera.position.set(p.x + 6, p.y + 7, p.z + 6);
+    controls.update();
+}
+
 function connectWS() {
     const ws = new WebSocket(`ws://${location.hostname}:3300`);
     ws.onopen = () => { document.getElementById('conn-status').textContent = 'Connected'; document.getElementById('conn-status').style.color = '#0f0'; };
     ws.onmessage = (e) => {
         const d = JSON.parse(e.data);
         if (d.type === 'init') {
-            Object.entries(d.agents).forEach(([r, s]) => updateAgentState(r, s));
+            Object.entries(d.agents).forEach(([r, s]) => {
+                updateAgentState(r, s);
+                _lastAgentStatus[r] = s.status;   // 초기 상태는 알림 없이 기록
+            });
         } else if (d.type === 'agent-update') {
+            const prev = _lastAgentStatus[d.agent];
             updateAgentState(d.agent, d.state);
+            const now = d.state && d.state.status;
+            // working → idle 전이 = 에이전트 작업 완료 → OS 알림
+            if (prev === 'working' && now === 'idle') {
+                notify('agent', `${(d.state && d.state.role) || d.agent} 완료`, '에이전트가 작업을 마쳤습니다.', { tag: `agent-${d.agent}` });
+            }
+            _lastAgentStatus[d.agent] = now;
         } else if (d.type === 'people-update') {
             syncPersonAvatars(d.people);
         } else if (d.type === 'teams-notification') {
             showTeamsNotification3D(d);
             handleTeamsNotification(d);   // CHAT-01: 열린 채팅창 즉시 갱신·닫힌 방 안읽음 배지
+            // OS 알림(chat): 해당 채팅을 지금 보고 있지 않을 때만 (in-app 말풍선과 중복 억제)
+            const chatId = d.message && d.message.chatId;
+            if (!(isChatOpen(chatId) && !document.hidden)) {
+                notify('chat', (d.message && d.message.senderName) || '새 메시지',
+                    ((d.message && d.message.text) || '').slice(0, 120),
+                    { tag: `chat-${chatId || 'x'}`, renotify: true,
+                      onClick: () => { if (chatId) openChat(chatId, d.personName || (d.message && d.message.senderName) || '채팅'); } });
+            }
         } else if (d.type === 'meeting-status') {
             handleMeetingStatus(d);
+            // OS 알림(meeting): 회의 시작 시 (meeting-status는 상태 변화 시에만 broadcast됨)
+            if (d.inMeeting) {
+                notify('meeting', `${d.personName || '화상회의'}`,
+                    d.subject ? `회의: ${d.subject}` : '화상회의가 시작되었습니다.',
+                    { tag: `meeting-${d.personId || 'x'}`, onClick: () => focusAvatar(d.personId) });
+            }
         }
     };
     ws.onclose = () => { document.getElementById('conn-status').textContent = 'Reconnecting...'; document.getElementById('conn-status').style.color = '#f00'; setTimeout(connectWS, 3000); };
@@ -3321,6 +3359,9 @@ connectWS();
 
 // ---- 인앱 Teams 채팅 UI 초기화 (CHAT-01) ----
 initChatPanel({ apiBase: `http://${location.hostname}:3300` });
+
+// ---- Windows(OS) 데스크톱 알림 초기화 (chat/agent/meeting/system, 클릭 시 기능 연결) ----
+initNotifications();
 
 // ---- 점심 게임 초기화 ----
 initLunchGame({

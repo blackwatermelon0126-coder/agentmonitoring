@@ -65,6 +65,7 @@ MS Graph API(Device Code Flow)로 Teams를 3D 오피스에 연동한다. 최초 
 - **인앱 채팅** (`three3d/js/chat-panel.js`): 우하단 **💬 채팅** 런처 → 사이드패널 방 목록 → 채팅창(읽기·전송). 열린 창 8초 폴링 + `teams-notification` WS로 실시간 갱신, 아바타 말풍선 클릭 시 해당 채팅 인앱 오픈.
   - **채팅방 검색**: 사이드패널 검색창에서 채팅방 명칭·멤버 이름으로 필터.
 - **조직 사용자 피커**: `GET /api/org-users` 로 조직 사용자를 불러와 아바타로 추가. `@odata.nextLink` 페이지네이션을 따라 **전체 사용자**를 조회한다(999명 초과 테넌트에서 누락 방지).
+- **Windows 데스크톱 알림** (`three3d/js/notifications.js`): 채팅·에이전트 완료·회의 등 이벤트를 **카테고리별 OS 토스트**로 알림. 알림 클릭 시 METAOFFICE 창 포커스 + **기능 연결**(채팅→채팅창 열기, 회의→해당 인물로 카메라 이동). 최초 1회 브라우저 알림 권한 허용 필요(localhost=보안 컨텍스트).
 
 ## Claude Code Hook 연동 (Phase 2 예정)
 

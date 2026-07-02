@@ -251,6 +251,11 @@ export function handleTeamsNotification(data) {
     }
 }
 
+/** 특정 채팅창이 현재 열려 있는지 여부 (OS 알림 중복 억제용) */
+export function isChatOpen(chatId) {
+    return !!chatId && openChatId === chatId;
+}
+
 // ── 초기화 (런처·패널·채팅창 생성) ────────────────────────────────
 
 /**
