@@ -536,7 +536,8 @@ app.post('/api/chats/:chatId/messages', requireLoopback, async (req, res) => {
 
 // ── 사람 아바타 관리 API (P5-B) ──────────────────────────────────
 
-const PEOPLE_PATH = path.join(__dirname, 'data', 'people.json');
+// 저장 경로 — 기본은 data/people.json. 테스트는 PEOPLE_STORE 로 격리(실제 데이터 오염 방지).
+const PEOPLE_PATH = process.env.PEOPLE_STORE || path.join(__dirname, 'data', 'people.json');
 
 // 서버 시작 시 people.json 로드
 function loadPeople() {
