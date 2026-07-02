@@ -2810,8 +2810,23 @@ function syncPersonAvatars(people) {
         const av = personAvatarMap.get(person.id);
         if (!av) {
             createPersonAvatar(person);
-        } else if (person.position && (person.position.x !== undefined) && (person.position.y !== undefined)) {
-            // 드래그 중인 아바타가 아니면(또는 다른 클라이언트의 갱신이면) 위치 반영
+            continue;
+        }
+        // 이름 변경(예: 서유지→ZEPHONI) 시 라벨·캐릭터 모델이 바뀌도록 아바타를 재생성한다.
+        if (av.displayName !== person.name) {
+            scene.remove(av.group);
+            av.labelEl.remove();
+            if (av.bubbleEl) av.bubbleEl.remove();
+            if (av.meetingEl) av.meetingEl.remove();
+            if (av.meetingSeatIdx >= 0 && meetingSeats[av.meetingSeatIdx]) {
+                meetingSeats[av.meetingSeatIdx].occupied = false;
+            }
+            personAvatarMap.delete(person.id);
+            createPersonAvatar(person);
+            continue;
+        }
+        // 위치 갱신 (드래그 중이 아니면)
+        if (person.position && (person.position.x !== undefined) && (person.position.y !== undefined)) {
             if (av !== draggingAvatar) {
                 const s = personPosToScene(person.position);
                 av.group.position.set(s.x, PERSON_GROUND_Y, s.z);
