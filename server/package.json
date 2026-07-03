@@ -14,7 +14,7 @@
     "audit:check": "npm audit --audit-level=high"
   },
   "dependencies": {
-    "@azure/msal-node": "^5.2.5",
+    "@azure/msal-node": "^5.3.1",
     "express": "4.22.2",
     "pino": "10.3.1",
     "ws": "8.21.0"
