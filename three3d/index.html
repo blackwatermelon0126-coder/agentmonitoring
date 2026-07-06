@@ -15,7 +15,7 @@
             backdrop-filter: blur(4px);
         }
         #status-panel {
-            position: absolute; bottom: 10px; left: 10px;
+            position: absolute; bottom: 70px; left: 10px;
             color: #fff; font-family: monospace; font-size: 11px;
             background: rgba(0,0,0,0.6); padding: 12px; border-radius: 8px;
             min-width: 280px; backdrop-filter: blur(4px);
@@ -41,18 +41,23 @@
     <div id="people-panel">
         <div class="section-label">Office Status</div>
         <div>Working: <span id="people-count" style="color:#0f0">0/0</span></div>
-        <div>Status: <span id="conn-status" style="color:#ff0">Connecting...</span></div>
-        <div style="margin-top:6px; padding-top:6px; border-top:1px solid #333">
-            <div><span id="time-of-day">—</span></div>
-            <div><span id="weather">—</span></div>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:14px;">
+            <span>Status: <span id="conn-status" style="color:#ff0">Connecting...</span></span>
+            <span style="color:#aaa;"><span id="time-of-day">—</span> · <span id="weather">—</span></span>
         </div>
         <div style="margin-top:6px; padding-top:6px; border-top:1px solid #333; color:#aaa; font-size:10px;">
             <div style="color:#FFD600; margin-bottom:3px;" id="view-hint">📷 카메라</div>
             <div><b style="color:#fff">1</b> 전체 &nbsp; <b style="color:#fff">2</b> 오피스 &nbsp; <b style="color:#fff">3</b> 공장위</div>
             <div><b style="color:#fff">4</b> 공장정면 &nbsp; <b style="color:#fff">5</b> 2층사무실 &nbsp; <b style="color:#fff">6</b> 수영장</div>
-            <div><b style="color:#fff">7</b> 물류창고 &nbsp; <b style="color:#fff">R</b> 리셋</div>
-            <div style="margin-top:3px; color:#777;">좌클릭 회전 · 우클릭/Shift 이동 · 휠 줌 · 화살표 이동</div>
+            <div><b style="color:#fff">7</b> 물류창고 &nbsp; <b style="color:#fff">8</b> 텐퍼센트/바디프렌드 &nbsp; <b style="color:#fff">R</b> 리셋</div>
+            <div style="margin-top:3px; color:#777;">좌클릭 회전 · 우클릭/Shift 이동 · 휠 줌 · 화살표(카메라 이동, OFF일 때)</div>
+            <div style="color:#777;">아바타 클릭=선택/드래그 · <b style="color:#FFD600">M</b> 이동모드</div>
+            <div style="color:#777;">이동 ON: <b style="color:#fff">↑↓←→</b> 이동 · <b style="color:#fff">Enter</b> 앉기/엘리베이터(층 선택)</div>
             <div style="color:#777;">SPACE: demo</div>
+        </div>
+        <div id="order-panel" style="margin-top:6px; padding-top:6px; border-top:1px solid #333;">
+            <div style="color:#4CAF50; margin-bottom:4px; font-size:10px; letter-spacing:1px;">🧾 ORDER <span style="color:#666;">(행 클릭=수정)</span></div>
+            <div id="order-list" style="font-size:10px; color:#ccc; max-height:22vh; overflow-y:auto;"></div>
         </div>
     </div>
 

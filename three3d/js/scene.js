@@ -7,12 +7,12 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createFactory, updateFactory } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
-import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, createICharacter, createWatermelonCharacter } from './character.js';
+import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, createICharacter, createWatermelonCharacter, updatePersonAnimation } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
 import { initLunchGame, triggerLunchGame } from './lunchgame.js';
 import { initChatPanel, openChat, handleTeamsNotification, isChatOpen } from './chat-panel.js';
 import { initNotifications, notify } from './notifications.js';
-import { initAuthGate } from './auth-msal.js';
+import { initAuthGate, getAccount } from './auth-msal.js';
 
 
 // ---- 캐릭터 특성 풀 ----
@@ -70,6 +70,7 @@ const VIEWS = {
     '5': { name: '2층 사무실', pos: [0, 5, -8],   target: [-10, 2.5, -18] },
     '6': { name: '수영장',   pos: [20, 12, 0],    target: [12, 0, -13] },
     '7': { name: '물류창고',  pos: [-30, 14, 38], target: [-42, 1, 22] },
+    '8': { name: '텐퍼센트/바디프렌드', pos: [-13, 13, 15], target: [-24, 5.5, -2] },
 };
 function tweenView(view, ms = 600) {
     const sp = camera.position.clone();
@@ -449,6 +450,20 @@ const signTex = new THREE.CanvasTexture(signCanvas);
 const sign = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 0.6), new THREE.MeshBasicMaterial({ map: signTex }));
 sign.position.set(0, 3.85, 4.05); scene.add(sign);
 
+// ── 아바타 키보드 이동 보조: 걸어다닐 수 있는 면 + 좌석 + 엘리베이터 진입존 ──
+// walkables: 이동 시 발밑으로 레이캐스트해 y를 스냅(계단·슬래브·데크·플랫폼). 없으면 지면 0.
+// seats: 근처에서 Enter로 앉기. elevatorZones: 근처에서 Enter로 층 선택.
+const walkables = [];
+const seats = [];
+const elevatorZones = [];   // [{ x, z, y, floor }]
+const elevatorPick = [];    // 클릭 시 층 메뉴를 여는 엘리베이터/발판/포털 메쉬
+const elevatorRings = [];   // 진입 포털 링(맥동 애니메이션용)
+const floorCenters = {};    // floor → { x, z, y } : 층 선택 시 아바타가 도착할 '그 층 센터'
+let cafeBounds = null;      // 카페 건물 footprint(로컬) — 엘리베이터는 건물 '안'에서만 호출
+const _downRay = new THREE.Raycaster();
+const _downDir = new THREE.Vector3(0, -1, 0);
+const _rayOrigin = new THREE.Vector3();
+
 // ============================================
 // 2층 사무실 빌딩 (구 카페테리아 자리) + 우측 계단
 // ============================================
@@ -473,6 +488,7 @@ const o2Slab = new THREE.Mesh(
 o2Slab.position.set(OFFICE2.x, OFFICE2.floorH, OFFICE2.z);
 o2Slab.castShadow = true; o2Slab.receiveShadow = true;
 scene.add(o2Slab);
+walkables.push(o2Slab);
 
 // 외벽 (3면 통유리, 우측은 계단 노출용 오픈)
 const o2GlassMat = new THREE.MeshPhysicalMaterial({
@@ -560,6 +576,7 @@ for (let i = 0; i < STAIRS.count; i++) {
     step.position.set(STAIRS.x, sy, sz);
     step.castShadow = true; step.receiveShadow = true;
     scene.add(step);
+    walkables.push(step);
 }
 // 계단 끝 → 2층 진입 플랫폼
 const stairsTopZ = STAIRS.zStart - (STAIRS.count - 1) * STAIRS.run;
@@ -570,6 +587,7 @@ const platform = new THREE.Mesh(
 platform.position.set(STAIRS.x, OFFICE2.floorH, stairsTopZ - 0.7);
 platform.castShadow = true; platform.receiveShadow = true;
 scene.add(platform);
+walkables.push(platform);
 // 핸드레일 (사선 — 양쪽)
 const railMat = new THREE.MeshStandardMaterial({ color: 0xFFEB3B, metalness: 0.5 });
 const stairLen = Math.sqrt((STAIRS.count * STAIRS.run) ** 2 + (STAIRS.count * STAIRS.rise) ** 2);
@@ -646,6 +664,1026 @@ const FLLABS_DESK_COLORS = [0x4A90D9, 0xE67E22, 0x27AE60, 0x8E44AD, 0xE74C3C];
 FLLABS_DESK_LOCALX.forEach((lx, i) => o2Desk(lx, 1, FLLABS_DESK_COLORS[i]));
 o2Desk(-2, 2, 0xFF9800);
 o2Desk(1, 2, 0xE91E63);
+
+// ============================================
+// 텐퍼센트 커피(1F) + 바디프렌드 안마의자(2F)
+// FLLABS 2F OFFICE 왼쪽에, 오피스의 2배 크기(w·d 2배)로 세운 2층 건물.
+// 1F: 오픈 카페(직원 1명 + 앞쪽 데크·테이블 2개), 2F: 안마의자 쇼룸 10대,
+// 좌측 외부 계단으로 1F↔2F 연결. (좌표계는 OFFICE2와 동일한 envGroup 로컬)
+// ============================================
+// 카페 직원/연출 애니메이션 참조 (animate에서 updateCafeStaff로 매 프레임 구동)
+// ⚠ TDZ 방지: animate() 호출보다 앞에서 선언(아래 IIFE가 값 할당).
+let cafeBarista = null, cafeAlba = null, cafeAlba2 = null, cafeCoffeeStream = null;
+let cafeDoor = null, cafeDoorOpen = false, cafeServer2F = null, cafeCat = null, cafeDiner = null, cafeClerk = null, cafeKitchen = null, cafeStocker = null;
+const cafeSteam = [], cafeDoorPick = [], cafeCustomers = [], bodyfriendChairs = [], cafeMenuPick = [], diningGuests = [];
+(function buildTenPercentBodyfriend() {
+    const CAFE = { x: -24, z: 0, w: 16, d: 12, floorH: 2.8 };  // 오피스(8×6)의 2배
+    const H  = CAFE.floorH * 4;         // 전체 높이(4층 건물)
+    const F2 = CAFE.floorH + 0.09;          // 2층 바닥면(슬래브 윗면)
+    const F3 = CAFE.floorH * 2 + 0.09;      // 3층 바닥면
+    const F4 = CAFE.floorH * 3 + 0.09;      // 4층 바닥면
+
+    // ---- 재질 ----
+    const glassMat = new THREE.MeshPhysicalMaterial({
+        color: 0xE8F5E9, transparent: true, opacity: 0.18, transmission: 0.9,
+        roughness: 0.05, metalness: 0.0, ior: 1.5, thickness: 0.1, side: THREE.DoubleSide,
+    });
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3E3A34, metalness: 0.6, roughness: 0.4 });
+    const wallMat  = new THREE.MeshStandardMaterial({ color: 0xEDE7DA, roughness: 0.85, metalness: 0.03 });
+    const woodMat  = new THREE.MeshStandardMaterial({ color: 0x9C6B3F, roughness: 0.7 });
+    const woodDark = new THREE.MeshStandardMaterial({ color: 0x6D4C33, roughness: 0.7 });
+    const metalMat = new THREE.MeshStandardMaterial({ color: 0x777777, metalness: 0.5, roughness: 0.4 });
+
+    // 캔버스 간판/메뉴 텍스처
+    function signTex(lines, bg, fg, sizes) {
+        const cv = document.createElement('canvas'); cv.width = 512; cv.height = 192;
+        const c = cv.getContext('2d');
+        c.fillStyle = bg; c.fillRect(0, 0, 512, 192);
+        c.fillStyle = fg; c.textAlign = 'center'; c.textBaseline = 'middle';
+        const step = 192 / (lines.length + 1);
+        lines.forEach((ln, i) => { c.font = (sizes && sizes[i]) || 'bold 56px sans-serif'; c.fillText(ln, 256, step * (i + 1)); });
+        return new THREE.CanvasTexture(cv);
+    }
+    // 로고 이미지 간판 텍스처 — 배경색 위에 로고를 비율 유지(contain)로 중앙 배치.
+    // 캔버스를 간판 판넬 비율(aspect=가로/세로)에 맞춰 만들어 로고 왜곡을 막는다.
+    // 선명도: 고해상도 캔버스 + 이방성 필터(anisotropy) 최대 → 비스듬한 각도 흐림 방지.
+    // 이미지는 비동기 로드 → onload 시점에 그린 뒤 needsUpdate로 텍스처를 갱신.
+    function logoTex(src, bg, aspect, pad = 0.12) {
+        const cw = 2048, ch = Math.round(cw / aspect);
+        const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+        const c = cv.getContext('2d');
+        c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
+        c.fillStyle = bg; c.fillRect(0, 0, cw, ch);
+        const tex = new THREE.CanvasTexture(cv);
+        tex.colorSpace = THREE.SRGBColorSpace;                       // 색 정확도
+        tex.anisotropy = renderer.capabilities.getMaxAnisotropy();   // 경사 각도 선명도
+        const im = new Image();
+        im.onload = () => {
+            const s = Math.min(cw * (1 - pad) / im.width, ch * (1 - pad) / im.height);
+            const dw = im.width * s, dh = im.height * s;
+            c.drawImage(im, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+            tex.needsUpdate = true;
+        };
+        im.src = src;
+        return tex;
+    }
+    // 위치 지정 + envGroup 추가 헬퍼
+    const add = (m, x, y, z) => { m.position.set(x, y, z); scene.add(m); return m; };
+
+    // ---- 구조 ----
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(CAFE.w, CAFE.d),
+        new THREE.MeshStandardMaterial({ color: 0xB07C46, roughness: 0.55 }));  // 우드 플랭크
+    floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; add(floor, CAFE.x, 0.02, CAFE.z);
+
+    // 층 슬래브 3개(2·3·4F 바닥)
+    const slabMat = new THREE.MeshStandardMaterial({ color: 0xCBAE86, roughness: 0.6 });
+    for (let f = 1; f <= 3; f++) {
+        const slab = new THREE.Mesh(new THREE.BoxGeometry(CAFE.w, 0.18, CAFE.d), slabMat);
+        slab.castShadow = slab.receiveShadow = true; add(slab, CAFE.x, CAFE.floorH * f, CAFE.z);
+        walkables.push(slab);
+    }
+
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(CAFE.w + 0.5, 0.2, CAFE.d + 0.5),
+        new THREE.MeshStandardMaterial({ color: 0x2E2A26, metalness: 0.3, roughness: 0.6 }));
+    roof.castShadow = true; add(roof, CAFE.x, H + 0.1, CAFE.z);
+
+    // 뒷벽 · 우측벽(솔리드) — 좌측(계단)·1F 정면(오픈 카페)은 개방
+    const back = new THREE.Mesh(new THREE.BoxGeometry(CAFE.w, H, 0.15), wallMat);
+    back.castShadow = back.receiveShadow = true; add(back, CAFE.x, H / 2, CAFE.z - CAFE.d / 2);
+    const rightW = new THREE.Mesh(new THREE.BoxGeometry(0.15, H, CAFE.d), wallMat);
+    rightW.castShadow = true; add(rightW, CAFE.x + CAFE.w / 2, H / 2, CAFE.z);
+
+    // 코너 기둥 + 가로 보(정면/후면)
+    for (const xo of [-CAFE.w / 2, CAFE.w / 2]) for (const zo of [-CAFE.d / 2, CAFE.d / 2]) {
+        const col = new THREE.Mesh(new THREE.BoxGeometry(0.2, H, 0.2), frameMat); col.castShadow = true;
+        add(col, CAFE.x + xo, H / 2, CAFE.z + zo);
+    }
+    for (const zo of [-CAFE.d / 2, CAFE.d / 2]) for (const yo of [0.08, CAFE.floorH, CAFE.floorH * 2, CAFE.floorH * 3, H - 0.08]) {
+        add(new THREE.Mesh(new THREE.BoxGeometry(CAFE.w, 0.16, 0.16), frameMat), CAFE.x, yo, CAFE.z + zo);
+    }
+    // 2·3·4F 정면 통유리(층별)
+    for (let f = 1; f <= 3; f++) {
+        add(new THREE.Mesh(new THREE.BoxGeometry(CAFE.w - 0.3, CAFE.floorH - 0.3, 0.06), glassMat),
+            CAFE.x, CAFE.floorH * f + CAFE.floorH / 2, CAFE.z + CAFE.d / 2);
+    }
+
+    // ---- 우드톤 인테리어 + 따뜻한 조명 (칙칙함 개선) ----
+    const woodDeep  = new THREE.MeshStandardMaterial({ color: 0x8B5A2B, roughness: 0.75 });
+    const woodWarm  = new THREE.MeshStandardMaterial({ color: 0xC08A50, roughness: 0.7 });
+    const seamMat   = new THREE.MeshStandardMaterial({ color: 0x6D4C33, roughness: 0.7 });
+    // 바닥 플랭크 이음선
+    for (let k = -3; k <= 3; k++) add(new THREE.Mesh(new THREE.BoxGeometry(CAFE.w - 0.4, 0.006, 0.04), seamMat), CAFE.x, 0.03, CAFE.z + k * 1.6);
+    // 우드톤에 어울리는 카페트(러그) — 좌석 구역, 이중 테두리
+    add(new THREE.Mesh(new THREE.PlaneGeometry(12, 7).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x7A5230, roughness: 0.95 })), CAFE.x, 0.033, CAFE.z + 1.5);
+    add(new THREE.Mesh(new THREE.PlaneGeometry(11, 6).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0xC2A06B, roughness: 0.95 })), CAFE.x, 0.037, CAFE.z + 1.5);
+    // 1F 뒷벽 세로 우드 슬랫(피처월) — 메뉴판보다 살짝 뒤
+    for (let k = 0; k <= 14; k++) {
+        add(new THREE.Mesh(new THREE.BoxGeometry(0.18, CAFE.floorH - 0.3, 0.06), (k % 2 ? woodDeep : woodWarm)),
+            CAFE.x - CAFE.w / 2 + 0.9 + k * 1.0, CAFE.floorH / 2, CAFE.z - CAFE.d / 2 + 0.06);
+    }
+    // 우측벽 안쪽 우드 패널 + 선반 2단(화분/원두)
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.05, CAFE.floorH - 0.2, CAFE.d - 0.6), woodDeep), CAFE.x + CAFE.w / 2 - 0.12, CAFE.floorH / 2, CAFE.z);
+    for (const sy of [1.1, 1.8]) {
+        add(new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.05, CAFE.d - 2), woodWarm), CAFE.x + CAFE.w / 2 - 0.35, sy, CAFE.z);
+        for (let j = -2; j <= 2; j++) {
+            add(new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.22, 0.18),
+                new THREE.MeshStandardMaterial({ color: (j % 2 ? 0x4CAF50 : 0xB0764A), roughness: 0.7 })),
+                CAFE.x + CAFE.w / 2 - 0.35, sy + 0.14, CAFE.z + j * 1.6);
+        }
+    }
+    // 카운터 위 펜던트 조명 3개 (코드 + 우드 갓 + 전구)
+    for (let p = -1; p <= 1; p++) {
+        const px = CAFE.x + 1 + p * 1.6, pz = CAFE.z - CAFE.d / 2 + 1.6;
+        add(new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.7, 4), new THREE.MeshStandardMaterial({ color: 0x333333 })), px, CAFE.floorH - 0.35, pz);
+        const shade = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.25, 12), new THREE.MeshStandardMaterial({ color: 0x6D4C33, roughness: 0.6 }));
+        shade.rotation.x = Math.PI; add(shade, px, CAFE.floorH - 0.72, pz);
+        add(new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8),
+            new THREE.MeshStandardMaterial({ color: 0xFFE9B0, emissive: 0xFFCC66, emissiveIntensity: 1.3 })), px, CAFE.floorH - 0.82, pz);
+    }
+    // 실내 따뜻한 조명(그림자 없이 밝기만) — 1F 2개 + 2·3·4F 각 1개
+    add(new THREE.PointLight(0xffe6bf, 5.0, 20, 1.0), CAFE.x - 4, CAFE.floorH - 0.4, CAFE.z + 1);
+    add(new THREE.PointLight(0xffe6bf, 5.0, 20, 1.0), CAFE.x + 4, CAFE.floorH - 0.4, CAFE.z - 1);
+    for (let f = 1; f <= 3; f++) add(new THREE.PointLight(0xffe6bf, 5.0, 22, 1.0), CAFE.x, CAFE.floorH * f + CAFE.floorH - 0.4, CAFE.z);
+
+    // ---- 1F 출입문 (좌측, 유리도어 + 초록 액센트 프레임) — 클릭 시 입장, 눈에 띄게 ----
+    const doorCX = CAFE.x - 5, doorW = 1.3, doorH = 2.3, doorZ = CAFE.z + CAFE.d / 2 + 0.04;
+    const doorAccent = new THREE.MeshStandardMaterial({ color: 0x1B8A4B, roughness: 0.5, metalness: 0.2 });  // 눈에 띄는 초록
+    // 고정 문틀(좌우 기둥 + 상단 보)
+    for (const ex of [doorCX - doorW / 2 - 0.07, doorCX + doorW / 2 + 0.07])
+        add(new THREE.Mesh(new THREE.BoxGeometry(0.14, doorH + 0.18, 0.16), doorAccent), ex, (doorH + 0.18) / 2, doorZ);
+    add(new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.42, 0.16, 0.16), doorAccent), doorCX, doorH + 0.12, doorZ);
+    // 문짝(좌측 힌지로 회전) — 초록 프레임 + 유리 + 금색 손잡이
+    const doorPivot = new THREE.Group();
+    doorPivot.position.set(doorCX - doorW / 2, 0, doorZ);
+    const dcx = doorW / 2, dcy = doorH / 2;
+    for (const ex of [0.06, doorW - 0.06]) { const b = new THREE.Mesh(new THREE.BoxGeometry(0.12, doorH, 0.09), doorAccent); b.position.set(ex, dcy, 0); doorPivot.add(b); }
+    for (const ey of [0.06, doorH - 0.06]) { const b = new THREE.Mesh(new THREE.BoxGeometry(doorW, 0.12, 0.09), doorAccent); b.position.set(dcx, ey, 0); doorPivot.add(b); }
+    const dglass = new THREE.Mesh(new THREE.BoxGeometry(doorW - 0.22, doorH - 0.22, 0.03), glassMat); dglass.position.set(dcx, dcy, 0); doorPivot.add(dglass);
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.35, 8), new THREE.MeshStandardMaterial({ color: 0xC9A227, metalness: 0.8, roughness: 0.3 })); handle.position.set(doorW - 0.2, dcy, 0.07); doorPivot.add(handle);
+    doorPivot.traverse(o => { if (o.isMesh) { o.castShadow = true; cafeDoorPick.push(o); } });
+    scene.add(doorPivot);
+    cafeDoor = doorPivot;
+
+    // ---- 간판 ----
+    // 간판(로고 이미지). 텐퍼센트 간판 클릭 시 메뉴 사진 표시.
+    const tpSign = add(new THREE.Mesh(new THREE.PlaneGeometry(2.75, 0.7), new THREE.MeshBasicMaterial({
+        map: logoTex('/3d/assets/tenpercent-logo.png', '#FFFFFF', 2.75 / 0.7), toneMapped: false })),
+        CAFE.x, CAFE.floorH - 0.15, CAFE.z + CAFE.d / 2 + 0.12);
+    cafeMenuPick.push(tpSign);
+    add(new THREE.Mesh(new THREE.PlaneGeometry(3.25, 0.7), new THREE.MeshBasicMaterial({
+        map: logoTex('/3d/assets/bodyfriend-logo.jpg', '#FFFFFF', 3.25 / 0.7), toneMapped: false })),
+        CAFE.x, H - 0.35, CAFE.z + CAFE.d / 2 + 0.14);
+    // 2F 식당 · 3F 매점 정면 간판(캔버스 텍스트)
+    add(new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.66), new THREE.MeshBasicMaterial({
+        map: signTex(['식당'], '#5D4037', '#FFF3E0', ['bold 110px sans-serif']), toneMapped: false })),
+        CAFE.x, CAFE.floorH * 2 - 0.4, CAFE.z + CAFE.d / 2 + 0.14);
+    add(new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.66), new THREE.MeshBasicMaterial({
+        map: signTex(['매점'], '#1565C0', '#FFFFFF', ['bold 110px sans-serif']), toneMapped: false })),
+        CAFE.x, CAFE.floorH * 3 - 0.4, CAFE.z + CAFE.d / 2 + 0.14);
+
+    // ---- (좌측 외부 계단 제거) — 층 이동은 우측 엘리베이터로 ----
+    const railMat = new THREE.MeshStandardMaterial({ color: 0x37474F, metalness: 0.5 });
+    // 각 층(2·3·4F) 좌측 개방부 안전 난간(가로 2단 + 세로 기둥)
+    for (const FY of [F2, F3, F4]) {
+        for (const yo of [FY + 0.55, FY + 1.05]) {
+            add(new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, CAFE.d - 1.2), railMat), CAFE.x - CAFE.w / 2 + 0.1, yo, CAFE.z);
+        }
+        for (let k = -2; k <= 2; k++) {
+            add(new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.1, 0.06), railMat), CAFE.x - CAFE.w / 2 + 0.1, FY + 0.55, CAFE.z + k * 2.4);
+        }
+    }
+
+    // ---- 엘리베이터(1~4F 이동) — 건물 '오른쪽'에 붙인 외부 유리 엘리베이터 + 각 층 실내 진입구 ----
+    // 우측벽 바깥(정면-우측)에 유리 샤프트를 붙이고, 정면(+z)·우측(+x) 양면에 큰 🛗 사인으로 확실히 보이게 한다.
+    // 실내 우측(슬래브 위)에 진입 발판+도어를 두고, 발판 근처에서 자동으로 "몇 층?" 메뉴 → 선택 층으로 이동(카메라 동반).
+    const EV = { x: CAFE.x + CAFE.w / 2 + 0.8, z: CAFE.z + CAFE.d / 2 - 2.3, r: 0.85 };   // 우측벽에 붙임
+    const evFrame = new THREE.MeshStandardMaterial({ color: 0xCFD8DC, metalness: 0.75, roughness: 0.25 });
+    const evGlass = new THREE.MeshPhysicalMaterial({ color: 0x81D4FA, transparent: true, opacity: 0.34, transmission: 0.72, roughness: 0.06, side: THREE.DoubleSide });
+    const evDoorFrame = new THREE.MeshStandardMaterial({ color: 0x00695C, metalness: 0.5, roughness: 0.4 });
+    cafeBounds = { minX: CAFE.x - CAFE.w / 2, maxX: CAFE.x + CAFE.w / 2, minZ: CAFE.z - CAFE.d / 2, maxZ: CAFE.z + CAFE.d / 2 };
+    // 외부 샤프트: 4 기둥 + 지붕 + 유리 3면(+x/+z/−z) + 카(1F)
+    for (const sx of [-EV.r, EV.r]) for (const sz of [-EV.r, EV.r])
+        add(new THREE.Mesh(new THREE.BoxGeometry(0.16, H, 0.16), evFrame), EV.x + sx, H / 2, EV.z + sz);
+    add(new THREE.Mesh(new THREE.BoxGeometry(EV.r * 2 + 0.3, 0.2, EV.r * 2 + 0.3), evFrame), EV.x, H + 0.1, EV.z);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.05, H, EV.r * 2), evGlass), EV.x + EV.r, H / 2, EV.z);   // 우측 유리
+    add(new THREE.Mesh(new THREE.BoxGeometry(EV.r * 2, H, 0.05), evGlass), EV.x, H / 2, EV.z + EV.r);   // 정면 유리
+    add(new THREE.Mesh(new THREE.BoxGeometry(EV.r * 2, H, 0.05), evGlass), EV.x, H / 2, EV.z - EV.r);   // 후면 유리
+    add(new THREE.Mesh(new THREE.BoxGeometry(EV.r * 2 - 0.1, CAFE.floorH - 0.2, EV.r * 2 - 0.1),
+        new THREE.MeshStandardMaterial({ color: 0x37474F, metalness: 0.5, roughness: 0.5 })), EV.x, (CAFE.floorH - 0.2) / 2, EV.z);
+    // 외부 대형 사인: 정면(+z) + 우측(+x)
+    add(new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.6), new THREE.MeshBasicMaterial({
+        map: signTex(['🛗 ELEV'], '#0D47A1', '#FFFFFF', ['bold 60px sans-serif']), toneMapped: false })),
+        EV.x, CAFE.floorH * 3 + 1.4, EV.z + EV.r + 0.04);
+    const evSignR = add(new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.6), new THREE.MeshBasicMaterial({
+        map: signTex(['🛗 ELEV'], '#0D47A1', '#FFFFFF', ['bold 60px sans-serif']), toneMapped: false })),
+        EV.x + EV.r + 0.04, CAFE.floorH * 3 + 1.4, EV.z);
+    evSignR.rotation.y = Math.PI / 2;   // 우측(+x) 향함
+    // 각 층: 실내 우측벽 진입구(도어 프레임 + 은색 도어 + 사인) + 진입 발판/진입존
+    const inX = CAFE.x + CAFE.w / 2 - 0.9;     // 실내 발판(슬래브 위)
+    const wallX = CAFE.x + CAFE.w / 2 - 0.1;   // 우측벽 안쪽(실내 도어 위치)
+    const evFrontZ = EV.z + EV.r;              // 외부 정면(+z) 도어면
+    for (let n = 1; n <= 4; n++) {
+        const fy = n === 1 ? 0 : (n - 1) * CAFE.floorH + 0.09;
+        floorCenters[n] = { x: CAFE.x, z: CAFE.z, y: fy };   // 층 센터(도착 지점)
+        // (실내) 우측벽 진입구: 도어 프레임 + 은색 도어 + 사인
+        for (const dz of [EV.z - 0.7, EV.z + 0.7])
+            add(new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.15, 0.14), evDoorFrame), wallX, fy + 1.07, dz);
+        add(new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 1.54), evDoorFrame), wallX, fy + 2.15, EV.z);
+        for (const dz of [EV.z - 0.33, EV.z + 0.33])
+            add(new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.0, 0.64), evFrame), wallX - 0.05, fy + 1.0, dz);
+        const sg = add(new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.3), new THREE.MeshBasicMaterial({
+            map: signTex(['🛗 ELEV'], '#0D47A1', '#FFFFFF', ['bold 40px sans-serif']), toneMapped: false })),
+            wallX - 0.12, fy + 2.42, EV.z);
+        sg.rotation.y = -Math.PI / 2;   // 실내(−x) 향함
+        // (외부) 정면(+z) 도어: 밖에서도 엘리베이터 문이 보이게 (클릭 대상)
+        for (const dx of [EV.x - 0.7, EV.x + 0.7])
+            add(new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.15, 0.12), evDoorFrame), dx, fy + 1.07, evFrontZ);
+        add(new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.12, 0.12), evDoorFrame), EV.x, fy + 2.15, evFrontZ);
+        for (const dx of [EV.x - 0.33, EV.x + 0.33])
+            elevatorPick.push(add(new THREE.Mesh(new THREE.BoxGeometry(0.62, 2.0, 0.06), evFrame), dx, fy + 1.0, evFrontZ - 0.04));
+        // 실내 진입 발판(클릭 대상) + 포털 링(빛나는 초록) + 진입존
+        elevatorPick.push(add(new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.05, 20),
+            new THREE.MeshStandardMaterial({ color: 0x00C853, emissive: 0x1B5E20, emissiveIntensity: 0.6, roughness: 0.6 })), inX, fy + 0.05, EV.z));
+        const evRing = add(new THREE.Mesh(new THREE.TorusGeometry(0.6, 0.06, 10, 28),
+            new THREE.MeshStandardMaterial({ color: 0x00E676, emissive: 0x00C853, emissiveIntensity: 0.9 })), inX, fy + 0.14, EV.z);
+        evRing.rotation.x = -Math.PI / 2;
+        elevatorPick.push(evRing); elevatorRings.push(evRing);
+        elevatorZones.push({ x: inX, z: EV.z, y: fy, floor: n });
+    }
+    // (외부 포털 제거) — 엘리베이터는 실내 진입 발판/도어에서만 호출한다(건물 안).
+
+    // ---- 1F 텐퍼센트 커피 인테리어 ----
+    const cnt = new THREE.Mesh(new THREE.BoxGeometry(5, 1.05, 0.9), woodDark); cnt.castShadow = true;
+    add(cnt, CAFE.x + 1, 0.55, CAFE.z - CAFE.d / 2 + 1.6);
+    add(new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.08, 1.1), woodMat), CAFE.x + 1, 1.1, CAFE.z - CAFE.d / 2 + 1.6);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 0.5),
+        new THREE.MeshStandardMaterial({ color: 0x4E342E, metalness: 0.6, roughness: 0.3 })),
+        CAFE.x + 2.2, 1.4, CAFE.z - CAFE.d / 2 + 1.6);   // 에스프레소 머신
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.45, 0.25),
+        new THREE.MeshStandardMaterial({ color: 0x212121, metalness: 0.5 })),
+        CAFE.x + 3.0, 1.38, CAFE.z - CAFE.d / 2 + 1.6);  // 그라인더
+    const menuBoard = add(new THREE.Mesh(new THREE.PlaneGeometry(3.2, 1.6), new THREE.MeshBasicMaterial({
+        map: signTex(['AMERICANO  4.5', 'CAFE LATTE  5.0', 'FLAT WHITE  5.5'], '#20160F', '#F3E7CE',
+            ['500 34px sans-serif', '500 34px sans-serif', '500 34px sans-serif']) })),
+        CAFE.x - 3.5, 1.9, CAFE.z - CAFE.d / 2 + 0.12);  // 메뉴판(클릭 시 메뉴 사진)
+    cafeMenuPick.push(menuBoard);
+    add(new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.9, 0.7),
+        new THREE.MeshPhysicalMaterial({ color: 0xEFEFEF, transparent: true, opacity: 0.35, roughness: 0.1, transmission: 0.7, side: THREE.DoubleSide })),
+        CAFE.x - 1.6, 1.35, CAFE.z - CAFE.d / 2 + 1.6);  // 페이스트리 케이스
+
+    // ---- 카페 테이블(실내/데크 공용) ----
+    // opts.umbrella: 파라솔 유무, opts.baseY: 바닥 높이(실내 0 / 데크 0.12)
+    function cafeTable(tx, tz, opts = {}) {
+        const { umbrella = true, baseY = 0.12 } = opts;
+        const g = new THREE.Group();
+        const top = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 0.08, 16), woodMat); top.position.y = 0.75; top.castShadow = true; g.add(top);
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.75, 8), metalMat); post.position.y = 0.375; g.add(post);
+        for (const ang of [0, Math.PI * (2 / 3), Math.PI * (4 / 3)]) {
+            const cx = Math.sin(ang) * 0.95, cz = Math.cos(ang) * 0.95;
+            const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.06, 12), woodDark); seat.position.set(cx, 0.45, cz); seat.castShadow = true; g.add(seat);
+            seats.push({ x: tx + cx, z: tz + cz, y: baseY, yaw: ang + Math.PI });   // 근처에서 앉기
+            const cpost = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.45, 6), metalMat); cpost.position.set(cx, 0.225, cz); g.add(cpost);
+            const bkk = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.05), woodDark);
+            bkk.position.set(cx + Math.sin(ang) * 0.2, 0.68, cz + Math.cos(ang) * 0.2); bkk.rotation.y = ang; g.add(bkk);
+        }
+        if (umbrella) {
+            const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.0, 8), metalMat); pole.position.y = 1.1; g.add(pole);
+            const umb = new THREE.Mesh(new THREE.ConeGeometry(1.35, 0.5, 12), new THREE.MeshStandardMaterial({ color: 0x2E7D32 })); umb.position.y = 2.15; umb.castShadow = true; g.add(umb);
+        }
+        // 커피잔 소품
+        const mug = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.05, 0.09, 10), new THREE.MeshStandardMaterial({ color: 0xFFFFFF }));
+        mug.position.set(0.18, 0.83, 0.05); g.add(mug);
+        g.position.set(tx, baseY, tz); scene.add(g);
+    }
+
+    // ---- 1F 실내 테이블 6개 (3×2, 파라솔 없음) ----
+    const indoorTables = [];
+    for (const tz of [CAFE.z - 0.5, CAFE.z + 3.5]) for (const tx of [CAFE.x - 4.5, CAFE.x, CAFE.x + 4.5]) {
+        cafeTable(tx, tz, { umbrella: false, baseY: 0.0 });
+        indoorTables.push({ x: tx, z: tz });
+    }
+
+    // ---- 손님 5명 — 테이블에 앉아 수다 (작은 모션은 updateCafeStaff에서 구동) ----
+    const custShirts = [0xE57373, 0x64B5F6, 0xFFB74D, 0xBA68C8, 0x4DB6AC];
+    const seatPlan = [
+        { ti: 0, ang: Math.PI * (2 / 3) }, { ti: 0, ang: Math.PI * (4 / 3) },  // 테이블0: 2명
+        { ti: 2, ang: 0 },                                                      // 테이블2: 1명
+        { ti: 4, ang: Math.PI * (2 / 3) }, { ti: 4, ang: Math.PI * (4 / 3) },  // 테이블4: 2명
+    ];
+    seatPlan.forEach((sp, i) => {
+        const tb = indoorTables[sp.ti];
+        const guest = createDetailedPerson(traitsFromSeed('tenpercent-guest-' + i, custShirts[i]));
+        guest.group.scale.set(0.9, 0.9, 0.9);
+        guest.group.position.set(tb.x + Math.sin(sp.ang) * 0.95, 0, tb.z + Math.cos(sp.ang) * 0.95);
+        guest.group.rotation.y = sp.ang + Math.PI;   // 테이블을 바라봄
+        scene.add(guest.group);
+        cafeCustomers.push({ p: guest, seed: i * 1.7 });
+    });
+
+    // ---- 1F 앞 데크 + 테이블 3개 (문 앞 CAFE.x-4.5 자리는 비움 → 고양이 공간) ----
+    const deckZ = CAFE.z + CAFE.d / 2 + 2.3;
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(CAFE.w * 0.85, 0.12, 4.6), woodMat);
+    deck.receiveShadow = true; walkables.push(add(deck, CAFE.x, 0.06, deckZ));
+    for (let k = -6; k <= 6; k++) add(new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.13, 4.6), woodDark), CAFE.x + k * 1.05, 0.065, deckZ);
+    for (const tx of [CAFE.x - 1.5, CAFE.x + 1.5, CAFE.x + 4.5]) cafeTable(tx, deckZ, { umbrella: true, baseY: 0.12 });
+
+    // ---- 데크 위 고양이 1마리 (앞쪽 가장자리를 좌우로 어슬렁 — updateCafeStaff에서 구동) ----
+    function makeCat(furColor) {
+        const g = new THREE.Group();
+        const fur = new THREE.MeshStandardMaterial({ color: furColor, roughness: 0.85 });
+        const dark = new THREE.MeshStandardMaterial({ color: 0x2A2018, roughness: 0.8 });
+        const pink = new THREE.MeshStandardMaterial({ color: 0xE79A9A, roughness: 0.7 });
+        // 몸통(누운 캡슐, 로컬 +x가 정면)
+        const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.34, 6, 12), fur);
+        body.rotation.z = Math.PI / 2; body.position.y = 0.26; body.castShadow = true; g.add(body);
+        // 머리(앞쪽 +x)
+        const head = new THREE.Group(); head.position.set(0.32, 0.36, 0);
+        const skull = new THREE.Mesh(new THREE.SphereGeometry(0.145, 14, 12), fur); skull.castShadow = true; head.add(skull);
+        for (const s of [-1, 1]) { const ear = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.12, 10), fur); ear.position.set(-0.02, 0.14, s * 0.08); head.add(ear); }
+        for (const s of [-1, 1]) { const eye = new THREE.Mesh(new THREE.SphereGeometry(0.02, 8, 8), dark); eye.position.set(0.12, 0.03, s * 0.06); head.add(eye); }
+        const nose = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 8), pink); nose.position.set(0.15, -0.02, 0); head.add(nose);
+        g.add(head);
+        // 다리 4개 [x, z]: 0=앞우 1=앞좌 2=뒤우 3=뒤좌
+        const legs = [];
+        const legGeo = new THREE.CylinderGeometry(0.035, 0.03, 0.26, 8);
+        for (const [lx, lz] of [[0.2, 0.1], [0.2, -0.1], [-0.2, 0.1], [-0.2, -0.1]]) {
+            const leg = new THREE.Mesh(legGeo, fur); leg.position.set(lx, 0.13, lz); leg.castShadow = true; g.add(leg); legs.push(leg);
+        }
+        // 꼬리(뒤쪽 -x, 위로 살짝 세움)
+        const tail = new THREE.Group(); tail.position.set(-0.34, 0.32, 0);
+        const seg = new THREE.Mesh(new THREE.CapsuleGeometry(0.035, 0.3, 4, 8), fur);
+        seg.position.set(-0.04, 0.13, 0); seg.rotation.z = 0.7; tail.add(seg);
+        g.add(tail);
+        return { group: g, head, tail, legs };
+    }
+    const cat = makeCat(0xD98A3D);   // 진저(치즈) 고양이
+    cat.group.scale.setScalar(0.9);
+    cat.group.position.set(CAFE.x - 4.5, 0.12, deckZ + 1.2);
+    scene.add(cat.group);
+    cat.patrol = { xMin: CAFE.x - 5.6, xMax: CAFE.x + 5.6, y: 0.12 };
+    cafeCat = cat;
+
+    // ---- 직원 2명: 바리스타(커피 추출) + 알바(주문받기), 둘 다 손님(+z) 바라봄 ----
+    const barista = createDetailedPerson(traitsFromSeed('tenpercent-barista', 0x2E7D32));
+    barista.group.scale.set(0.9, 0.9, 0.9);
+    barista.group.position.set(CAFE.x + 2.0, 0, CAFE.z - CAFE.d / 2 + 0.95);  // 머신 앞
+    barista.group.rotation.y = 0;
+    scene.add(barista.group);
+    cafeBarista = barista;
+
+    const alba = createDetailedPerson(traitsFromSeed('tenpercent-alba', 0xF9A825));
+    alba.group.scale.set(0.9, 0.9, 0.9);
+    alba.group.position.set(CAFE.x - 1.8, 0, CAFE.z - CAFE.d / 2 + 0.95);      // 레지스터(좌측)
+    alba.group.rotation.y = 0;
+    scene.add(alba.group);
+    cafeAlba = alba;
+    // 레지스터(POS) — 알바 앞 카운터 위
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.3), new THREE.MeshStandardMaterial({ color: 0x263238, metalness: 0.4 })),
+        CAFE.x - 1.8, 1.25, CAFE.z - CAFE.d / 2 + 1.5);
+
+    // ---- 커피 추출 연출: 컵 + 추출 스트림 + 스팀 (머신 앞) ----
+    const spoutX = CAFE.x + 2.2, spoutZ = CAFE.z - CAFE.d / 2 + 1.78;
+    add(new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.05, 0.1, 12), new THREE.MeshStandardMaterial({ color: 0xFFFFFF })),
+        spoutX, 1.18, spoutZ);  // 컵
+    const stream = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.17, 6),
+        new THREE.MeshStandardMaterial({ color: 0x3B2314 }));
+    stream.position.set(spoutX, 1.30, spoutZ); scene.add(stream);
+    cafeCoffeeStream = stream;
+    for (let i = 0; i < 3; i++) {
+        const sp = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 6),
+            new THREE.MeshBasicMaterial({ color: 0xFFFFFF, transparent: true, opacity: 0.3, depthWrite: false }));
+        sp.userData.baseY = 1.5;
+        add(sp, spoutX + (i - 1) * 0.04, 1.5, spoutZ);
+        cafeSteam.push(sp);
+    }
+
+    // ---- 서빙 알바 1명 — 트레이 들고 매장 안을 왕복(걷기) ----
+    const alba2 = createDetailedPerson(traitsFromSeed('tenpercent-alba2', 0x00897B));
+    alba2.group.scale.set(0.9, 0.9, 0.9);
+    alba2.group.position.set(CAFE.x - 4, 0, CAFE.z + 1);
+    scene.add(alba2.group);
+    alba2.group.userData.patrol = { x0: CAFE.x - 4, x1: CAFE.x + 5, z: CAFE.z + 1 };
+    cafeAlba2 = alba2;
+    // 트레이(양손 앞) + 컵 2개
+    const tray = new THREE.Group();
+    tray.add(new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.03, 0.3), new THREE.MeshStandardMaterial({ color: 0x5D4037 })));
+    for (const cx of [-0.1, 0.1]) {
+        const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.04, 0.09, 10), new THREE.MeshStandardMaterial({ color: 0xFFFFFF }));
+        cup.position.set(cx, 0.06, 0); tray.add(cup);
+    }
+    tray.position.set(0, 1.05, 0.28); alba2.group.add(tray);
+
+    // ---- 4F 바디프렌드 안마의자 10대 (2열 × 5, 정면 +z 향함) ----
+    function massageChair(mx, mz, accent) {
+        const g = new THREE.Group();
+        const black = new THREE.MeshStandardMaterial({ color: 0x1A1A1A, roughness: 0.5, metalness: 0.2 });
+        const acc = new THREE.MeshStandardMaterial({ color: accent, roughness: 0.5 });
+        const base = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.35, 1.1), black); base.position.y = 0.18; g.add(base);
+        const seat = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.2, 0.9), acc); seat.position.set(0, 0.45, 0.05); g.add(seat);
+        const bk = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.1, 0.22), black); bk.position.set(0, 1.0, -0.42); bk.rotation.x = -0.22; g.add(bk);
+        const hd = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.28, 0.2), acc); hd.position.set(0, 1.55, -0.58); hd.rotation.x = -0.22; g.add(hd);
+        for (const sx of [-0.5, 0.5]) { const arm = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.4, 1.0), black); arm.position.set(sx, 0.6, 0.05); g.add(arm); }
+        const ft = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.3, 0.6), black); ft.position.set(0, 0.42, 0.78); ft.rotation.x = 0.35; g.add(ft);
+        g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+        g.position.set(mx, F4, mz); scene.add(g);
+        const chairRef = { bk, hd, ft, phase: bodyfriendChairs.length * 0.9 };
+        bodyfriendChairs.push(chairRef);   // 미세 모션용
+        seats.push({ x: mx, z: mz + 0.1, y: F4, yaw: 0, massage: chairRef });   // 안마의자에 앉기(정면 +z) + 의자 참조
+    }
+    const accents = [0xC62828, 0x00695C, 0x1565C0, 0x6A1B9A, 0xEF6C00];
+    for (const rz of [CAFE.z - 2.4, CAFE.z + 2.2]) for (let k = 0; k < 5; k++) massageChair(CAFE.x - 6 + k * 3, rz, accents[k]);
+
+    // ---- 4F 바디프렌드 안내 서버 1명 — 안마의자 앞에서 안내 ----
+    const server2 = createDetailedPerson(traitsFromSeed('bodyfriend-server', 0x37474F));
+    server2.group.scale.set(0.9, 0.9, 0.9);
+    server2.group.position.set(CAFE.x, F4, CAFE.z + CAFE.d / 2 - 1.6);
+    server2.group.rotation.y = Math.PI;   // 안마의자(−z) 쪽을 바라보며 안내
+    scene.add(server2.group);
+    cafeServer2F = server2;
+
+    // ============================================
+    // 2F 식당(구내식당) — 배식 카운터 + 식탁 4세트 + 직원 1명
+    // ============================================
+    const diningWood = new THREE.MeshStandardMaterial({ color: 0xB58A5C, roughness: 0.7 });
+    const chairWood  = new THREE.MeshStandardMaterial({ color: 0x8D6742, roughness: 0.7 });
+    function diningSet(dx, dz) {
+        const g = new THREE.Group();
+        const top = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.08, 0.95), diningWood); top.position.y = 0.72; g.add(top);
+        for (const [lx, lz] of [[-0.65, -0.38], [0.65, -0.38], [-0.65, 0.38], [0.65, 0.38]]) {
+            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.72, 0.08), chairWood); leg.position.set(lx, 0.36, lz); g.add(leg);
+        }
+        for (const sx of [-0.35, 0.35]) {   // 식판 2개
+            const tray = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.03, 0.3), new THREE.MeshStandardMaterial({ color: 0xECEFF1 })); tray.position.set(sx, 0.77, 0); g.add(tray);
+        }
+        for (const [cx, cz, ry] of [[0, -0.85, 0], [0, 0.85, Math.PI], [-1.05, 0, Math.PI / 2], [1.05, 0, -Math.PI / 2]]) {   // 의자 4개
+            seats.push({ x: dx + cx, z: dz + cz, y: F2, yaw: ry });   // 근처에서 앉기
+            const ch = new THREE.Group();
+            const seat = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.07, 0.44), chairWood); seat.position.y = 0.45; ch.add(seat);
+            const bk = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.5, 0.06), chairWood); bk.position.set(0, 0.7, -0.19); ch.add(bk);
+            for (const [sx, sz] of [[-0.18, -0.18], [0.18, -0.18], [-0.18, 0.18], [0.18, 0.18]]) {
+                const l = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.45, 0.05), chairWood); l.position.set(sx, 0.225, sz); ch.add(l);
+            }
+            ch.position.set(cx, 0, cz); ch.rotation.y = ry; g.add(ch);
+        }
+        g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+        g.position.set(dx, F2, dz); scene.add(g);
+    }
+    // 식탁 6세트 (3열 × 2행)
+    for (const dz of [CAFE.z - 2.6, CAFE.z + 2.4]) for (const dx of [CAFE.x - 5, CAFE.x, CAFE.x + 4.5]) diningSet(dx, dz);
+    // 배식 카운터(뒷벽) + 스테인리스 상판 + 음식 트레이
+    add(new THREE.Mesh(new THREE.BoxGeometry(CAFE.w - 5, 0.95, 0.8), diningWood), CAFE.x - 1, F2 + 0.48, CAFE.z - CAFE.d / 2 + 0.7);
+    add(new THREE.Mesh(new THREE.BoxGeometry(CAFE.w - 4.8, 0.06, 0.85), metalMat), CAFE.x - 1, F2 + 0.98, CAFE.z - CAFE.d / 2 + 0.7);
+    for (let k = 0; k < 5; k++) add(new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.12, 0.5),
+        new THREE.MeshStandardMaterial({ color: [0xE57373, 0xFFB74D, 0x81C784, 0xFFF176, 0xA1887F][k], roughness: 0.8 })),
+        CAFE.x - 4 + k * 1.5, F2 + 1.05, CAFE.z - CAFE.d / 2 + 0.7);
+    // 배식 직원(기존)
+    const diner = createDetailedPerson(traitsFromSeed('cafeteria-staff', 0xEF6C00));
+    diner.group.scale.set(0.9, 0.9, 0.9);
+    diner.group.position.set(CAFE.x - 1, F2, CAFE.z - CAFE.d / 2 + 1.55);
+    scene.add(diner.group);
+    cafeDiner = diner;
+    // 주방 아줌마 — 배식대 좌측에서 냄비 젓기(냄비 앞에 배치)
+    const kitchen = createDetailedPerson(traitsFromSeed('kitchen-ajumma', 0xD81B60));
+    kitchen.group.scale.set(0.9, 0.9, 0.9);
+    kitchen.group.position.set(CAFE.x - 5, F2, CAFE.z - CAFE.d / 2 + 1.5);
+    kitchen.group.rotation.y = Math.PI;   // 카운터(−z)의 냄비를 향함
+    scene.add(kitchen.group);
+    cafeKitchen = kitchen;
+    add(new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.24, 0.24, 16), new THREE.MeshStandardMaterial({ color: 0x9E9E9E, metalness: 0.7, roughness: 0.3 })),
+        CAFE.x - 5, F2 + 1.04, CAFE.z - CAFE.d / 2 + 0.85);   // 냄비
+    // 식사하는 손님 5명 — 앉은 자세 + 식사 모션(updateCafeStaff에서 구동)
+    const dinerShirts = [0xE57373, 0x64B5F6, 0xFFB74D, 0xBA68C8, 0x4DB6AC];
+    const guestPlan = [
+        { dx: CAFE.x - 5,   dz: CAFE.z - 2.6, cx: 0,     cz: -0.85, ry: 0 },
+        { dx: CAFE.x - 5,   dz: CAFE.z + 2.4, cx: 0,     cz: 0.85,  ry: Math.PI },
+        { dx: CAFE.x,       dz: CAFE.z - 2.6, cx: -1.05, cz: 0,     ry: Math.PI / 2 },
+        { dx: CAFE.x,       dz: CAFE.z + 2.4, cx: 1.05,  cz: 0,     ry: -Math.PI / 2 },
+        { dx: CAFE.x + 4.5, dz: CAFE.z + 2.4, cx: 0,     cz: -0.85, ry: 0 },
+        { dx: CAFE.x + 4.5, dz: CAFE.z - 2.6, cx: -1.05, cz: 0,     ry: Math.PI / 2 },
+        { dx: CAFE.x,       dz: CAFE.z - 2.6, cx: 0,     cz: -0.85, ry: 0 },
+        { dx: CAFE.x - 5,   dz: CAFE.z - 2.6, cx: 1.05,  cz: 0,     ry: -Math.PI / 2 },
+    ];
+    guestPlan.forEach((gp, i) => {
+        const g = createDetailedPerson(traitsFromSeed('diner-guest-' + i, dinerShirts[i % dinerShirts.length]));
+        g.group.scale.set(0.9, 0.9, 0.9);
+        g.group.position.set(gp.dx + gp.cx, F2, gp.dz + gp.cz);
+        g.group.rotation.y = gp.ry;
+        scene.add(g.group);
+        diningGuests.push({ p: g, seed: i * 1.9 });
+    });
+
+    // ============================================
+    // 3F 매점 (GS25 스타일) — 다양한 상품 진열 선반 6 + 음료 냉장고 + 계산대 + 알바생 2명
+    // ============================================
+    const shelfMetal = new THREE.MeshStandardMaterial({ color: 0xCFD8DC, roughness: 0.5, metalness: 0.3 });
+    const prodPalette = [0xE53935, 0x1E88E5, 0xFDD835, 0x43A047, 0xFB8C00, 0x8E24AA, 0x00ACC1, 0xEC407A, 0x6D4C41, 0xECEFF1];
+    // 상품 1개(종류별 형태) — 0 음료병 1 캔 2 과자박스 3 컵라면 4 과자봉지
+    function gsProduct(kind, color) {
+        const m = new THREE.MeshStandardMaterial({ color, roughness: 0.6 });
+        if (kind === 0) return new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.3, 8), m);
+        if (kind === 1) return new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.15, 8), m);
+        if (kind === 2) return new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.26, 0.15), m);
+        if (kind === 3) return new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.07, 0.15, 12), m);
+        return new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.3, 0.05), m);
+    }
+    const prodH = [0.3, 0.15, 0.26, 0.15, 0.3];
+    function gsShelf(sx, sz) {
+        const g = new THREE.Group();
+        const frame = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.6, 0.5), shelfMetal); frame.position.set(0, 0.8, -0.12); g.add(frame);
+        for (let lv = 0; lv < 3; lv++) {
+            const board = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.04, 0.5), shelfMetal); board.position.set(0, 0.4 + lv * 0.5, 0); g.add(board);
+            for (let c = 0; c < 7; c++) {
+                const kind = (lv * 2 + c) % 5;
+                const p = gsProduct(kind, prodPalette[(lv * 7 + c) % prodPalette.length]);
+                p.position.set(-0.85 + c * 0.28, 0.4 + lv * 0.5 + prodH[kind] / 2 + 0.02, 0.12);
+                g.add(p);
+            }
+        }
+        g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        g.position.set(sx, F3, sz); scene.add(g);
+    }
+    for (const sz of [CAFE.z - 3.5, CAFE.z - 0.5, CAFE.z + 2.5]) for (const sx of [CAFE.x - 5, CAFE.x + 0.5]) gsShelf(sx, sz);
+    // 음료 냉장고(뒷벽) — 본체 + 유리문 + 안쪽 음료 병
+    add(new THREE.Mesh(new THREE.BoxGeometry(4.2, 2.0, 0.7), new THREE.MeshStandardMaterial({ color: 0xECEFF1, roughness: 0.5 })), CAFE.x - 4, F3 + 1.0, CAFE.z - CAFE.d / 2 + 0.5);
+    add(new THREE.Mesh(new THREE.BoxGeometry(3.9, 1.8, 0.05), new THREE.MeshPhysicalMaterial({ color: 0xB3E5FC, transparent: true, opacity: 0.3, transmission: 0.7, roughness: 0.05, side: THREE.DoubleSide })), CAFE.x - 4, F3 + 1.0, CAFE.z - CAFE.d / 2 + 0.87);
+    for (let r = 0; r < 3; r++) for (let cc = 0; cc < 10; cc++)
+        add(new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.28, 8), new THREE.MeshStandardMaterial({ color: prodPalette[(r * 3 + cc) % prodPalette.length], roughness: 0.6 })),
+            CAFE.x - 5.75 + cc * 0.4, F3 + 0.45 + r * 0.55, CAFE.z - CAFE.d / 2 + 0.6);
+    // 계산대 + 레지스터
+    add(new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.0, 0.75), woodDark), CAFE.x + 4.5, F3 + 0.5, CAFE.z + CAFE.d / 2 - 1.8);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.22, 0.32), new THREE.MeshStandardMaterial({ color: 0x263238, metalness: 0.4 })), CAFE.x + 4.5, F3 + 1.1, CAFE.z + CAFE.d / 2 - 1.8);
+    // 계산대 알바생(기존) — 바코드 스캔
+    const clerk = createDetailedPerson(traitsFromSeed('shop-clerk', 0x1565C0));
+    clerk.group.scale.set(0.9, 0.9, 0.9);
+    clerk.group.position.set(CAFE.x + 4.5, F3, CAFE.z + CAFE.d / 2 - 1.2);
+    clerk.group.rotation.y = Math.PI;
+    scene.add(clerk.group);
+    cafeClerk = clerk;
+    // 진열 알바생(추가) — 선반 앞에서 물건 채우기
+    const stocker = createDetailedPerson(traitsFromSeed('shop-alba', 0x00897B));
+    stocker.group.scale.set(0.9, 0.9, 0.9);
+    stocker.group.position.set(CAFE.x + 0.5, F3, CAFE.z + 2.5 + 1.0);
+    stocker.group.rotation.y = Math.PI;   // 선반(−z) 향함
+    scene.add(stocker.group);
+    cafeStocker = stocker;
+})();
+
+// 텐퍼센트 카페 직원/연출 애니메이션 (animate에서 매 프레임 호출)
+// - 바리스타: 머신 쪽으로 팔을 뻗고 상하로 움직이며 커피 추출
+// - 알바: 가벼운 끄덕임 + 이따금 손짓(주문받기)
+// - 추출 스트림: 주기적으로 흐름(추출/대기 반복), 스팀은 상승·소멸 반복
+function updateCafeStaff(elapsed) {
+    // 바리스타 — 머신 조작(팔 상하) + 무게중심 이동 + 고개 움직임
+    if (cafeBarista) {
+        const t = elapsed * 2.2, b = cafeBarista;
+        b.armR.shoulder.rotation.x = -0.78 + Math.sin(t) * 0.24;
+        b.armR.elbow.rotation.x = -0.85;
+        b.armL.shoulder.rotation.x = -0.45 + Math.sin(t * 0.5) * 0.08;
+        b.armL.elbow.rotation.x = -0.5;
+        b.torso.rotation.y = Math.sin(t * 0.5) * 0.06;
+        b.headGroup.rotation.x = 0.15 + Math.sin(t * 0.3) * 0.06;
+        b.headGroup.rotation.y = Math.sin(t * 0.2) * 0.1;
+        b.legL.hip.rotation.x = Math.sin(t * 0.25) * 0.04;   // 무게중심 이동
+    }
+    // 알바(주문받기) — 끄덕임 + 몸 흔들 + 이따금 손짓
+    if (cafeAlba) {
+        const t = elapsed * 1.6, a = cafeAlba;
+        a.headGroup.rotation.x = Math.sin(t) * 0.07 + 0.03;
+        a.headGroup.rotation.y = Math.sin(t * 0.4) * 0.2;
+        a.torso.rotation.y = Math.sin(t * 0.3) * 0.05;
+        const g = Math.max(0, Math.sin(elapsed * 0.7));      // 손짓 사이클
+        a.armR.shoulder.rotation.x = -0.15 - g * 0.6;
+        a.armR.elbow.rotation.x = -0.3 - g * 0.7;
+        a.armL.shoulder.rotation.z = 0.08;
+    }
+    // 서빙 알바 — 트레이 들고 매장 안 왕복(걷기)
+    if (cafeAlba2 && cafeAlba2.group.userData.patrol) {
+        const a2 = cafeAlba2, pr = a2.group.userData.patrol, period = 10;
+        const ph = (elapsed % period) / period;
+        const tt = ph < 0.5 ? ph * 2 : (1 - ph) * 2;         // 0→1→0 왕복
+        a2.group.position.x = pr.x0 + (pr.x1 - pr.x0) * tt;
+        a2.group.position.z = pr.z;
+        a2.group.rotation.y = ph < 0.5 ? Math.PI / 2 : -Math.PI / 2;
+        const sw = Math.sin(elapsed * 9) * 0.38;             // 다리 스윙
+        a2.legL.hip.rotation.x = sw;  a2.legL.knee.rotation.x = Math.max(0, -sw) * 1.2;
+        a2.legR.hip.rotation.x = -sw; a2.legR.knee.rotation.x = Math.max(0, sw) * 1.2;
+        a2.armL.shoulder.rotation.x = -0.95; a2.armL.elbow.rotation.x = -1.15;  // 트레이 든 팔
+        a2.armR.shoulder.rotation.x = -0.95; a2.armR.elbow.rotation.x = -1.15;
+        a2.pelvis.position.y = 0.9 + Math.abs(Math.sin(elapsed * 9)) * 0.04;
+    }
+    // 손님 5명 — 앉은 자세 + 수다(고개·몸 흔들, 이따금 손짓)
+    for (let i = 0; i < cafeCustomers.length; i++) {
+        const c = cafeCustomers[i].p, seed = cafeCustomers[i].seed;
+        c.pelvis.position.y = 0.55;   // 앉은 높이
+        c.legL.hip.rotation.x = -Math.PI / 2 + 0.1; c.legL.knee.rotation.x = Math.PI / 2 - 0.1;
+        c.legR.hip.rotation.x = -Math.PI / 2 + 0.1; c.legR.knee.rotation.x = Math.PI / 2 - 0.1;
+        c.armL.shoulder.rotation.x = 0.2; c.armL.elbow.rotation.x = -0.7;
+        const t = elapsed * 1.5 + seed;
+        c.headGroup.rotation.y = Math.sin(t) * 0.22;
+        c.headGroup.rotation.x = Math.sin(t * 0.6 + seed) * 0.06;
+        c.torso.rotation.y = Math.sin(t * 0.4) * 0.05;
+        const gest = Math.max(0, Math.sin(elapsed * 0.8 + seed * 2));   // 이따금 손짓
+        c.armR.shoulder.rotation.x = 0.2 - gest * 0.6;
+        c.armR.elbow.rotation.x = -0.7 - gest * 0.3;
+    }
+    // 4F 안마의자 모션 — 아바타가 앉은 의자는 '작동 중'(리클라이닝 + 롤러 진동), 나머지는 대기 미세 모션
+    for (let i = 0; i < bodyfriendChairs.length; i++) {
+        const c = bodyfriendChairs[i];
+        if (sittingSeat && sittingSeat.massage === c) {
+            const roll = Math.sin(elapsed * 9);                     // 빠른 롤러 진동
+            const recline = (Math.sin(elapsed * 0.6) + 1) / 2;      // 천천히 눕혔다 세우기(0→1)
+            c.bk.rotation.x = -0.22 - recline * 0.4 - roll * 0.03;
+            c.hd.rotation.x = -0.22 - recline * 0.4;
+            c.ft.rotation.x = 0.35 + recline * 0.7 + roll * 0.05;
+        } else {
+            const d = Math.sin(elapsed * 1.2 + c.phase) * 0.05;
+            c.bk.rotation.x = -0.22 - d;
+            c.hd.rotation.x = -0.22 - d;
+            c.ft.rotation.x = 0.35 + d * 1.5;
+        }
+    }
+    // 안마의자에 앉은 아바타 — 롤러에 맞춰 살짝 흔들림(마사지 진동)
+    if (sittingSeat && sittingSeat.massage && selectedAvatarId) {
+        const sav = personAvatarMap.get(selectedAvatarId);
+        if (sav) sav.group.position.y = sittingSeat.y + Math.abs(Math.sin(elapsed * 9)) * 0.02;
+    }
+    // 4F 안내 서버 — 고개 돌림 + 안마의자 안내 제스처
+    if (cafeServer2F) {
+        const t = elapsed * 1.3, s = cafeServer2F;
+        s.headGroup.rotation.y = Math.sin(t * 0.5) * 0.25;
+        s.torso.rotation.y = Math.sin(t * 0.3) * 0.06;
+        const gest = Math.max(0, Math.sin(elapsed * 0.5));
+        s.armR.shoulder.rotation.x = -0.3 - gest * 0.7;
+        s.armR.shoulder.rotation.z = -0.3;
+        s.armR.elbow.rotation.x = -0.2;
+    }
+    // 2F 식당 직원 — 끄덕임 + 배식(국자 뜨는 듯 오른팔 상하)
+    if (cafeDiner) {
+        const t = elapsed * 1.8, d = cafeDiner;
+        d.headGroup.rotation.x = Math.sin(t) * 0.06 + 0.05;
+        d.headGroup.rotation.y = Math.sin(t * 0.5) * 0.15;
+        d.torso.rotation.y = Math.sin(t * 0.35) * 0.05;
+        const scoop = (Math.sin(elapsed * 2.2) + 1) / 2;     // 0→1 배식 사이클
+        d.armR.shoulder.rotation.x = -0.5 - scoop * 0.5;
+        d.armR.elbow.rotation.x = -0.6 - scoop * 0.5;
+        d.armL.shoulder.rotation.x = -0.25;
+        d.armL.elbow.rotation.x = -0.35;
+    }
+    // 2F 식당 손님들 — 앉은 자세 + 식사(숟가락질) + 수다
+    for (let i = 0; i < diningGuests.length; i++) {
+        const c = diningGuests[i].p, seed = diningGuests[i].seed;
+        c.pelvis.position.y = 0.55;   // 앉은 높이
+        c.legL.hip.rotation.x = -Math.PI / 2 + 0.1; c.legL.knee.rotation.x = Math.PI / 2 - 0.1;
+        c.legR.hip.rotation.x = -Math.PI / 2 + 0.1; c.legR.knee.rotation.x = Math.PI / 2 - 0.1;
+        const t = elapsed * 2 + seed;
+        const eat = (Math.sin(t) + 1) / 2;                 // 숟가락 입↔식판
+        c.armR.shoulder.rotation.x = -0.4 - eat * 0.5;
+        c.armR.elbow.rotation.x = -0.8 - eat * 0.9;
+        c.armL.shoulder.rotation.x = -0.2; c.armL.elbow.rotation.x = -0.5;
+        c.headGroup.rotation.x = 0.12 + Math.sin(t) * 0.06;
+        c.headGroup.rotation.y = Math.sin(elapsed * 0.7 + seed) * 0.18;
+        c.torso.rotation.y = Math.sin(elapsed * 0.4 + seed) * 0.05;
+    }
+    // 주방 아줌마 — 냄비 젓기(오른팔 원 운동) + 끄덕임
+    if (cafeKitchen) {
+        const t = elapsed * 2.6, k = cafeKitchen;
+        k.armR.shoulder.rotation.x = -0.7 + Math.sin(t) * 0.2;
+        k.armR.shoulder.rotation.z = -0.2;
+        k.armR.elbow.rotation.x = -1.0 + Math.cos(t) * 0.25;
+        k.armL.shoulder.rotation.x = -0.5; k.armL.elbow.rotation.x = -0.9;
+        k.headGroup.rotation.x = 0.15 + Math.sin(t * 0.5) * 0.05;
+        k.torso.rotation.y = Math.sin(elapsed * 0.3) * 0.04;
+    }
+    // 3F 매점 직원 — 끄덕임 + 바코드 스캔(오른팔 좌우/상하)
+    if (cafeClerk) {
+        const t = elapsed * 1.5, c = cafeClerk;
+        c.headGroup.rotation.x = Math.sin(t) * 0.05 + 0.04;
+        c.headGroup.rotation.y = Math.sin(t * 0.6) * 0.18;
+        c.torso.rotation.y = Math.sin(t * 0.3) * 0.04;
+        const scan = Math.sin(elapsed * 3.0);                // 스캔 왕복
+        c.armR.shoulder.rotation.x = -0.6 + scan * 0.25;
+        c.armR.shoulder.rotation.z = -0.15;
+        c.armR.elbow.rotation.x = -0.8;
+        c.armL.shoulder.rotation.x = -0.2;
+    }
+    // 엘리베이터 포털 링 — 맥동(크기·발광)으로 '포털' 느낌
+    for (let i = 0; i < elevatorRings.length; i++) {
+        const r = elevatorRings[i];
+        const s = 1 + Math.sin(elapsed * 2 + i) * 0.12;
+        r.scale.set(s, s, 1);
+        r.material.emissiveIntensity = 0.7 + 0.5 * (0.5 + 0.5 * Math.sin(elapsed * 3 + i));
+    }
+    // 3F 매점 진열 알바생 — 선반에 물건 채우기(팔 올림 반복) + 끄덕임
+    if (cafeStocker) {
+        const t = elapsed * 1.6, s = cafeStocker;
+        const reach = (Math.sin(t) + 1) / 2;
+        s.armR.shoulder.rotation.x = -0.6 - reach * 0.8;
+        s.armR.elbow.rotation.x = -0.5 - reach * 0.4;
+        s.armL.shoulder.rotation.x = -0.3 - reach * 0.3;
+        s.headGroup.rotation.x = -0.05 - reach * 0.1;
+        s.torso.rotation.y = Math.sin(elapsed * 0.4) * 0.05;
+    }
+    // 출입문 개폐(입장 시 바깥쪽으로 열림)
+    if (cafeDoor) cafeDoor.rotation.y += ((cafeDoorOpen ? -1.2 : 0) - cafeDoor.rotation.y) * 0.12;
+    // 커피 추출 스트림 + 스팀
+    if (cafeCoffeeStream) cafeCoffeeStream.visible = (elapsed % 3.2) < 2.4;   // 추출 2.4s / 대기 0.8s
+    for (let i = 0; i < cafeSteam.length; i++) {
+        const sp = cafeSteam[i];
+        const tt = (elapsed * 0.5 + i * 0.33) % 1;
+        sp.position.y = sp.userData.baseY + tt * 0.5;
+        sp.material.opacity = 0.3 * (1 - tt);
+        sp.scale.setScalar(0.6 + tt * 0.8);
+    }
+    // 데크 고양이 — 앞쪽 데크를 좌우로 어슬렁(걸음·바운스·꼬리 흔들기·방향 전환·두리번)
+    if (cafeCat && cafeCat.patrol) {
+        const c = cafeCat, p = cafeCat.patrol, period = 18;
+        const ph = (elapsed % period) / period;
+        const tri = ph < 0.5 ? ph * 2 : (1 - ph) * 2;                 // 0→1→0 왕복
+        c.group.position.x = p.xMin + (p.xMax - p.xMin) * tri;
+        c.group.position.y = p.y + Math.abs(Math.sin(elapsed * 7)) * 0.02;
+        const targetRY = ph < 0.5 ? 0 : Math.PI;                       // 진행 방향(+x/−x) 바라봄
+        c.group.rotation.y += (targetRY - c.group.rotation.y) * 0.12;
+        const sw = Math.sin(elapsed * 7) * 0.5;                        // 대각선 보행
+        c.legs[0].rotation.z = sw;  c.legs[3].rotation.z = sw;
+        c.legs[1].rotation.z = -sw; c.legs[2].rotation.z = -sw;
+        c.tail.rotation.y = Math.sin(elapsed * 2.5) * 0.5;
+        c.tail.rotation.x = Math.sin(elapsed * 1.7) * 0.15;
+        c.head.rotation.y = Math.sin(elapsed * 0.8) * 0.35;
+    }
+}
+
+// 텐퍼센트 입장 — 문 열기 + 매장 내부 뷰로 카메라 이동 + 메뉴 사진 오버레이
+function enterCafe() {
+    cafeDoorOpen = true;
+    // 매장 내부 뷰(월드좌표 = envGroup 로컬 + z(-18)). 문 안쪽에서 카운터를 바라봄.
+    tweenView({ pos: [-24, 1.6, -13.5], target: [-24, 1.25, -22.4] }, 900);
+    if (window.__showCafeMenu) window.__showCafeMenu();
+}
+
+// ============================================
+// 텐퍼센트 주문 시스템 — 인터랙티브 메뉴 오버레이 + ORDER 폼(우상단 패널)
+// 메뉴에서 음료 선택(✓)·온도·수량·옵션 → 저장 시 "음료/온도/N잔/옵션" 문자열로
+// localStorage(로그인 사용자별)에 적재. ORDER 폼의 행 클릭 → 같은 오버레이로 수정/삭제.
+// ============================================
+(function setupCafeOrder() {
+    // ---- 메뉴 데이터(메뉴 사진 → 카테고리별 주요 음료) ----
+    const CAFE_MENU = [
+        { cat: 'SIGNATURE', items: ['시그니처 라떼', '텐퍼 라떼', '솔티드 밀크카라멜', '더티 망고라떼', '아인슈페너', '리얼 초코라떼'] },
+        { cat: 'COFFEE', items: ['아메리카노', '에스프레소', '쇼콜라프레소', '플랫화이트', '카페라떼', '바닐라빈라떼', '돌체라떼', '밀크카라멜라떼', '카페모카', '콜드브루', '돌체브루라떼', '제주바닐라브루라떼'] },
+        { cat: 'TEN-UP', items: ['사과라떼', '초콜릿크런치치즈폼', '쿠키치즈폼', '요거트(플레인)', '요거트(망고/딸기/블루베리)', '아보카도바나나', '애플망고', '망고딸기'] },
+        { cat: '제로', items: ['딥앤베리', '딥앤초코', '딥앤커피', '우바피치아이스티', '제로피치아이스티', '제로망고아이스티', '제로사과아이스티', '제로체리콕'] },
+        { cat: '라이트', items: ['애플사이다비니거', '그린텐피즈', '리얼딸기라떼', '진한곡물라떼', '로얄밀크티', '착즙에이드(레몬/자몽)', '고흥유자차'] },
+        { cat: '티', items: ['허니티(레몬/자몽)', '블랙자몽티', '잉글리쉬브렉퍼스트', '얼그레이', '유기농녹차', '시트러스그린', '히비스커스에이드', '페퍼민트', '캐모마일'] },
+        { cat: 'MATCHA', items: ['진한 말차라떼', '진한 말차카페라떼', '진한 말차슈페너', '말차칩크림라떼', '말차초코라떼', '말차치즈프레치노'] },
+        { cat: 'DESSERT', items: ['우유버터쿠키', '초코버터쿠키', '코코넛쿠키', '갈레트브루통', '텐퍼샌드', '휘낭시에', '크림카스텔라', '고메버터바', '버터밀크스콘', '초코스콘', '마카롱', '아몬드케익', '수제쿠키'] },
+    ];
+    const TEMPS = ['아이스', '핫'];
+    const OPTIONS = ['노옵션', '샷 추가', '시럽 추가', '연하게', '크림 많이'];
+
+    // ---- 주문 저장(로그인 사용자별 localStorage) ----
+    const keyFor = () => 'tp_orders__' + ((getAccount() && getAccount().username) || 'guest');
+    const loadOrders = () => { try { return JSON.parse(localStorage.getItem(keyFor())) || []; } catch { return []; } };
+    const ORDER_API = `http://${location.hostname}:3300`;
+    // 저장 = 로컬(본인 뷰) + 서버 동기화(ORDER-01 집계용). 비로그인 시 서버 동기화는 스킵.
+    const saveOrders = (list) => {
+        try { localStorage.setItem(keyFor(), JSON.stringify(list)); } catch { /* noop */ }
+        const acct = getAccount();
+        if (acct && acct.username) {
+            fetch(`${ORDER_API}/api/orders`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: acct.username, name: acct.name || acct.username, items: list }),
+            }).catch(() => { /* noop */ });
+        }
+    };
+    const orderText = (o) => `${o.drink}/${o.temp}/${o.qty}잔/${o.option}`;
+    let seq = Date.now();
+    const newId = () => 'o' + (++seq).toString(36);
+
+    // ---- ORDER 폼 렌더(우상단 #order-list) ----
+    function renderOrders() {
+        const box = document.getElementById('order-list');
+        if (!box) return;
+        const list = loadOrders();
+        box.innerHTML = '';
+        if (!list.length) {
+            const empty = document.createElement('div');
+            empty.style.cssText = 'color:#666;';
+            empty.textContent = '주문 없음 — 텐퍼센트 메뉴에서 담기';
+            box.appendChild(empty);
+            return;
+        }
+        list.forEach((o) => {
+            const row = document.createElement('div');
+            row.title = '클릭하여 수정';
+            row.style.cssText = 'cursor:pointer; padding:3px 6px; border-radius:4px; margin:2px 0; background:rgba(255,255,255,0.05); border:1px solid #2a2a2a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
+            row.textContent = '• ' + orderText(o);
+            row.onmouseenter = () => { row.style.background = 'rgba(76,175,80,0.25)'; };
+            row.onmouseleave = () => { row.style.background = 'rgba(255,255,255,0.05)'; };
+            row.onclick = () => openMenu(o);
+            box.appendChild(row);
+        });
+    }
+    window.__renderOrders = renderOrders;
+    // ORDER-01: 서버 스케줄(WS) 연동 — 10:00 clear / 09:18 마감 알림창
+    window.__clearOrders = () => { try { localStorage.setItem(keyFor(), '[]'); } catch { /* noop */ } renderOrders(); };
+    window.__orderDeadlineAlert = () => {
+        if (document.getElementById('order-deadline-modal')) return;
+        const ov = document.createElement('div');
+        ov.id = 'order-deadline-modal';
+        ov.style.cssText = 'position:fixed; inset:0; z-index:1700; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.6); font-family:sans-serif;';
+        const bx = document.createElement('div');
+        bx.style.cssText = 'background:#1b1b1b; color:#eee; border:2px solid #e74c3c; border-radius:14px; padding:26px 30px; max-width:90vw; text-align:center; box-shadow:0 12px 48px rgba(0,0,0,0.6);';
+        bx.innerHTML = '<div style="font-size:20px; font-weight:800; margin-bottom:10px;">☕ 커피 주문 마감</div>'
+            + '<div style="font-size:14px; color:#ccc; line-height:1.6;">텐퍼센트 커피 주문이 마감되었습니다.<br>잠시 후 09:20에 MOM 채팅방으로 전체 주문이 공유됩니다.</div>';
+        const btn = document.createElement('button');
+        btn.textContent = '확인';
+        btn.style.cssText = 'margin-top:18px; background:#e74c3c; color:#fff; border:none; border-radius:8px; padding:9px 22px; font-size:14px; font-weight:700; cursor:pointer; font-family:inherit;';
+        btn.onclick = () => ov.remove();
+        bx.appendChild(btn); ov.appendChild(bx); document.body.appendChild(ov);
+        ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+    };
+
+    // ---- 오버레이(메뉴 선택 + 수정 겸용) ----
+    let selDrink = null, selTemp = '아이스', selQty = 1, selOpt = '노옵션', editingId = null;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'cafe-menu-overlay';
+    overlay.style.cssText = 'position:fixed; inset:0; z-index:1500; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.72); backdrop-filter:blur(3px); font-family:sans-serif;';
+
+    const box = document.createElement('div');
+    box.style.cssText = 'position:relative; width:1600px; max-width:96vw; max-height:90vh; display:flex; flex-direction:column; background:#1b1b1b; color:#eee; border-radius:14px; box-shadow:0 12px 48px rgba(0,0,0,0.6); overflow:hidden;';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'padding:14px 18px; font-size:16px; font-weight:800; letter-spacing:1px; background:#2b2b2b; border-bottom:1px solid #000;';
+    header.textContent = '☕ TENPERCENT 주문';
+
+    // 좌: 텐퍼센트 메뉴 이미지 / 우: 인터랙티브 음료 리스트
+    const midRow = document.createElement('div');
+    midRow.style.cssText = 'display:flex; flex:1 1 auto; min-height:0;';
+
+    const imgWrap = document.createElement('div');
+    imgWrap.style.cssText = 'flex:0 0 64%; overflow:hidden; min-height:0; background:#111; border-right:1px solid #000; padding:10px; display:flex; align-items:center; justify-content:center;';
+    const menuImg = document.createElement('img');
+    menuImg.src = '/3d/assets/tenpercent-menu.jpg';
+    menuImg.alt = '텐퍼센트 메뉴';
+    menuImg.style.cssText = 'max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; border-radius:8px; display:block;';
+    imgWrap.appendChild(menuImg);
+
+    // 메뉴 리스트(스크롤, 카테고리별 2열)
+    const listWrap = document.createElement('div');
+    listWrap.style.cssText = 'overflow-y:auto; padding:6px 14px 12px; flex:1 1 0; min-width:0; min-height:120px;';
+    const drinkEls = new Map();   // 음료명 → { it, check }
+    CAFE_MENU.forEach((grp) => {
+        const cat = document.createElement('div');
+        cat.textContent = '· ' + grp.cat;
+        cat.style.cssText = 'color:#4CAF50; font-size:11px; font-weight:700; margin:12px 0 4px; letter-spacing:1px;';
+        listWrap.appendChild(cat);
+        const grid = document.createElement('div');
+        grid.style.cssText = 'display:grid; grid-template-columns:1fr 1fr; gap:4px;';
+        grp.items.forEach((name) => {
+            const it = document.createElement('div');
+            it.style.cssText = 'padding:5px 8px; font-size:12px; border-radius:5px; cursor:pointer; border:1px solid transparent; display:flex; align-items:center; gap:5px;';
+            const check = document.createElement('span'); check.textContent = '✓';
+            check.style.cssText = 'color:#4CAF50; font-weight:700; visibility:hidden;';
+            const label = document.createElement('span'); label.textContent = name;
+            it.append(check, label);
+            it.onmouseenter = () => { if (selDrink !== name) it.style.background = 'rgba(255,255,255,0.07)'; };
+            it.onmouseleave = () => { if (selDrink !== name) it.style.background = 'transparent'; };
+            it.onclick = () => selectDrink(name);
+            drinkEls.set(name, { it, check });
+            grid.appendChild(it);
+        });
+        listWrap.appendChild(grid);
+    });
+    function selectDrink(name) {
+        selDrink = name;
+        drinkEls.forEach(({ it, check }, n) => {
+            const on = (n === name);
+            check.style.visibility = on ? 'visible' : 'hidden';
+            it.style.background = on ? 'rgba(76,175,80,0.22)' : 'transparent';
+            it.style.borderColor = on ? '#4CAF50' : 'transparent';
+        });
+    }
+
+    // 컨트롤(온도 / 수량 / 옵션)
+    const controls = document.createElement('div');
+    controls.style.cssText = 'padding:10px 16px; border-top:1px solid #000; background:#232323; display:flex; flex-wrap:wrap; gap:14px; align-items:center; font-size:13px;';
+
+    const tempWrap = document.createElement('div'); tempWrap.style.cssText = 'display:flex; gap:6px; align-items:center;';
+    const tempLabel = document.createElement('span'); tempLabel.textContent = '온도'; tempLabel.style.color = '#aaa';
+    tempWrap.appendChild(tempLabel);
+    const tempBtns = {};
+    TEMPS.forEach((t) => {
+        const b = document.createElement('button'); b.textContent = t;
+        b.style.cssText = 'border:1px solid #555; background:#333; color:#ddd; border-radius:6px; padding:4px 10px; cursor:pointer; font-family:inherit; font-size:13px;';
+        b.onclick = () => setTemp(t);
+        tempBtns[t] = b; tempWrap.appendChild(b);
+    });
+    function setTemp(t) {
+        selTemp = t;
+        TEMPS.forEach((k) => {
+            const on = k === t;
+            tempBtns[k].style.background = on ? '#4CAF50' : '#333';
+            tempBtns[k].style.color = on ? '#fff' : '#ddd';
+            tempBtns[k].style.borderColor = on ? '#4CAF50' : '#555';
+        });
+    }
+
+    const qtyWrap = document.createElement('div'); qtyWrap.style.cssText = 'display:flex; gap:6px; align-items:center;';
+    const qtyLabel = document.createElement('span'); qtyLabel.textContent = '수량'; qtyLabel.style.color = '#aaa';
+    const minus = document.createElement('button'); minus.textContent = '−';
+    const qtyVal = document.createElement('span'); qtyVal.style.cssText = 'min-width:26px; text-align:center; font-weight:700;';
+    const plus = document.createElement('button'); plus.textContent = '＋';
+    [minus, plus].forEach((b) => { b.style.cssText = 'border:1px solid #555; background:#333; color:#ddd; border-radius:6px; width:28px; height:28px; cursor:pointer; font-family:inherit; font-size:14px;'; });
+    minus.onclick = () => setQty(selQty - 1); plus.onclick = () => setQty(selQty + 1);
+    function setQty(n) { selQty = Math.max(1, Math.min(20, n)); qtyVal.textContent = selQty; }
+    qtyWrap.append(qtyLabel, minus, qtyVal, plus);
+
+    const optWrap = document.createElement('div'); optWrap.style.cssText = 'display:flex; gap:6px; align-items:center;';
+    const optLabel = document.createElement('span'); optLabel.textContent = '옵션'; optLabel.style.color = '#aaa';
+    const optSel = document.createElement('select');
+    optSel.style.cssText = 'background:#333; color:#ddd; border:1px solid #555; border-radius:6px; padding:4px 8px; font-family:inherit; font-size:13px;';
+    OPTIONS.forEach((o) => { const op = document.createElement('option'); op.value = o; op.textContent = o; optSel.appendChild(op); });
+    optSel.onchange = () => { selOpt = optSel.value; };
+    optWrap.append(optLabel, optSel);
+
+    controls.append(tempWrap, qtyWrap, optWrap);
+
+    // 푸터(삭제 / 닫기 / 저장)
+    const footer = document.createElement('div');
+    footer.style.cssText = 'padding:12px 16px; border-top:1px solid #000; background:#1b1b1b; display:flex; justify-content:flex-end; gap:10px; align-items:center;';
+    const delBtn = document.createElement('button'); delBtn.textContent = '🗑 삭제';
+    delBtn.style.cssText = 'margin-right:auto; background:#7a2b2b; color:#fff; border:none; border-radius:8px; padding:8px 14px; font-size:13px; cursor:pointer; font-family:inherit; display:none;';
+    const closeBtn = document.createElement('button'); closeBtn.textContent = '✕ 닫기';
+    closeBtn.style.cssText = 'background:#e74c3c; color:#fff; border:none; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer; font-family:inherit;';
+    const saveBtn = document.createElement('button'); saveBtn.textContent = '＋ 저장';
+    saveBtn.style.cssText = 'background:#2ecc71; color:#fff; border:none; border-radius:8px; padding:8px 18px; font-size:13px; font-weight:700; cursor:pointer; font-family:inherit;';
+    footer.append(delBtn, closeBtn, saveBtn);
+
+    midRow.append(imgWrap, listWrap);
+    box.append(header, midRow, controls, footer);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const hide = () => { overlay.style.display = 'none'; };
+    closeBtn.onclick = hide;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) hide(); });   // 배경 클릭도 닫기
+
+    saveBtn.onclick = () => {
+        if (!selDrink) { alert('음료를 먼저 선택하세요.'); return; }
+        const list = loadOrders();
+        if (editingId) {
+            const o = list.find((x) => x.id === editingId);
+            if (o) { o.drink = selDrink; o.temp = selTemp; o.qty = selQty; o.option = selOpt; }
+        } else {
+            list.push({ id: newId(), drink: selDrink, temp: selTemp, qty: selQty, option: selOpt });
+        }
+        saveOrders(list); renderOrders(); hide();
+    };
+    delBtn.onclick = () => {
+        if (!editingId) return;
+        saveOrders(loadOrders().filter((x) => x.id !== editingId));
+        renderOrders(); hide();
+    };
+
+    // 열기: existing 없으면 새 주문, 있으면 수정 모드(값 프리필 + 삭제 버튼 표시)
+    function openMenu(existing) {
+        editingId = existing ? existing.id : null;
+        selectDrink(existing ? existing.drink : null);
+        setTemp(existing ? existing.temp : '아이스');
+        setQty(existing ? existing.qty : 1);
+        selOpt = existing ? existing.option : '노옵션';
+        optSel.value = selOpt;
+        header.textContent = existing ? '✏ 주문 수정' : '☕ TENPERCENT 주문';
+        saveBtn.textContent = existing ? '💾 수정 저장' : '＋ 저장';
+        delBtn.style.display = existing ? 'inline-block' : 'none';
+        listWrap.scrollTop = 0;
+        overlay.style.display = 'flex';
+    }
+    window.__showCafeMenu = () => openMenu(null);
+
+    // 출입문 클릭 → 입장(내부 뷰 + 메뉴) / 텐퍼센트 간판·메뉴판 클릭 → 메뉴
+    const ray = new THREE.Raycaster();
+    const ndv = new THREE.Vector2();
+    renderer.domElement.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return;
+        const rect = renderer.domElement.getBoundingClientRect();
+        ndv.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+        ndv.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+        ray.setFromCamera(ndv, camera);
+        if (cafeDoorPick.length && ray.intersectObjects(cafeDoorPick, true).length > 0) { enterCafe(); return; }
+        if (cafeMenuPick.length && ray.intersectObjects(cafeMenuPick, true).length > 0) { window.__showCafeMenu(); return; }
+        // 엘리베이터/발판/포털 클릭 → 층 메뉴 (아바타 미선택 시 가까운 아바타 자동 선택)
+        if (elevatorPick.length && ray.intersectObjects(elevatorPick, true).length > 0) {
+            if (!selectedAvatarId) { const nid = nearestAvatarId(); if (nid) setSelectedAvatar(nid); }
+            if (selectedAvatarId) openFloorMenu();
+            else showSelectToast('먼저 아바타를 추가/선택하세요');
+            return;
+        }
+    });
+
+    renderOrders();   // 초기 렌더(로드시 저장된 주문 표시)
+})();
 
 // 계단 오르내리는 에이전트 — 무한 루프 애니메이션
 const stairAgentObj = _createDetailedPersonForStairs({
@@ -1741,12 +2779,16 @@ function animate() {
     const delta = clock.getDelta();
     const elapsed = clock.getElapsedTime();
     controls.update();
+    updateAvatarKeyboardMove(delta, elapsed);
+    updateSelectionIndicator(elapsed);
+    updateInteractHint();
 
     updateFloatingTexts(delta);
     updateFactory(delta, elapsed);
     updateWarehouse(delta, elapsed);
     updateStairAgent(elapsed);
-    
+    updateCafeStaff(elapsed);
+
 
     // ---- 시간 / 날씨 ----
     const DAY_START_OFFSET = 0.38; // 오전(밝은 하늘)에서 시작
@@ -2114,6 +3156,23 @@ const personAvatarMap = new Map();
 // P5-D: 현재 드래그 중인 아바타({group,...} 객체). 드래그 중에는 syncPersonAvatars의
 // 위치 덮어쓰기를 막아 사용자가 끄는 손맛을 유지한다.
 let draggingAvatar = null;
+
+// ---- 선택 아바타 방향키 이동 (게임식 이동) ----
+// keyboardMoveEnabled: 좌하단 토글(또는 M키)로 on/off. on이면 방향키가 카메라 패닝 대신
+//   선택된 아바타를 카메라 기준(전/후/좌/우)으로 이동시킨다.
+// selectedAvatarId: 아바타 클릭 시 선택되는 대상(이동·하이라이트 링 대상).
+// pressedMoveKeys: 현재 눌린 방향키 집합(부드러운 프레임 단위 이동용).
+// ⚠ TDZ 방지: animate()가 updateAvatarKeyboardMove()에서 이 값들을 참조하므로 animate() 앞에서 선언.
+let keyboardMoveEnabled = false;
+let selectedAvatarId = null;
+let sittingSeat = null;   // 앉아 있는 좌석({x,z,y,yaw}) 또는 null
+// ⚠ TDZ 방지: animate()가 updateInteractHint()에서 아래 값들을 참조하므로 animate() 앞에서 선언.
+const SIT_RANGE = 2.6;    // 좌석 인식 반경(넉넉히)
+const EV_RANGE  = 2.5;    // 엘리베이터 진입존 인식 반경
+let sitHintEl = null;      // 상호작용 힌트 DOM (updateInteractHint에서 지연 생성)
+let evMenuArmed = true;    // 발판 진입 시 층 메뉴 1회 자동 오픈(발판을 벗어나면 재장전)
+const pressedMoveKeys = new Set();
+let selectionRing = null;
 
 animate();
 
@@ -2829,7 +3888,8 @@ function syncPersonAvatars(people) {
         if (person.position && (person.position.x !== undefined) && (person.position.y !== undefined)) {
             if (av !== draggingAvatar) {
                 const s = personPosToScene(person.position);
-                av.group.position.set(s.x, PERSON_GROUND_Y, s.z);
+                // y(층 높이)는 보존 — 엘리베이터로 상층에 올라간 아바타가 people-update로 1층으로 떨어지지 않게.
+                av.group.position.set(s.x, av.group.position.y, s.z);
             }
         }
     }
@@ -3291,6 +4351,7 @@ function updatePersonLabels() {
         const id = mesh.userData.personId;
         const av = personAvatarMap.get(id);
         if (!av) return;
+        setSelectedAvatar(id);    // 클릭한 아바타를 선택(방향키 이동 대상)
         draggingAvatar = av;
         draggingAvatar.personId = id;
         controls.enabled = false; // 카메라 회전 잠금 (드래그 중)
@@ -3316,17 +4377,439 @@ function updatePersonLabels() {
         controls.enabled = true;
         dom.releasePointerCapture?.(ev.pointerId);
 
-        // 3D 씬 좌표 → 서버 position(2D px) 역변환 후 영속화
-        const pos = scenePosToPerson(av.group.position.x, av.group.position.z);
-        fetch(`http://localhost:3300/api/people/${id}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ position: pos }),
-        }).catch(() => {});
+        // 3D 씬 좌표 → 서버 position(2D px) 역변환 후 영속화 (키보드 이동과 공용)
+        persistPersonPosition(id);
     }
 
     dom.addEventListener('pointerup', endDrag);
     dom.addEventListener('pointercancel', endDrag);
+})();
+
+// ---- 선택 아바타 방향키 이동 + 좌하단 토글 (게임식 이동) ----
+// - 아바타를 클릭하면 선택된다(setupPersonDrag3D에서 setSelectedAvatar 호출).
+// - 좌하단 토글 버튼(또는 M키)으로 이동 모드 on/off.
+// - 이동 모드 on: 방향키가 카메라 패닝(OrbitControls) 대신 선택 아바타를 카메라 기준으로 이동.
+//   off로 돌리면 controls.listenToKeyEvents로 방향키를 다시 카메라 패닝에 돌려준다.
+// - 이동은 바닥 평면(y=PERSON_GROUND_Y)에서만 일어나고, 멈추면 서버에 위치를 영속화(드래그와 동일).
+
+const AVATAR_MOVE_SPEED = 6;   // 초당 씬 유닛 이동 속도
+const MOVE_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+
+// 3인칭 팔로우 카메라 — 아바타가 방향키(카메라 기준 상/하/좌/우)로 이동하는 동안,
+// 카메라는 시야 각도·줌·높이를 그대로 둔 채 아바타를 따라 '평행 이동'만 한다.
+// (카메라 회전이 없으므로 빙글빙글 돌지 않아 어지럽지 않다.) 멈추면 자유 시점으로 복귀.
+const FOLLOW_TARGET_Y = 1.4;  // 카메라가 바라보는 지점 높이(아바타 눈높이 근처)
+const FOLLOW_LERP     = 10;   // 팔로우 부드러움(클수록 빠르게 따라붙음)
+
+// ---- 상호작용: 의자에 앉기 / 엘리베이터로 층 이동 (이동 모드 + 선택 아바타) ----
+// SIT_RANGE·EV_RANGE·sitHintEl 은 animate() 호출보다 앞(위쪽 TDZ 안전 구역)에서 선언함.
+
+/** 로컬 좌표 lp가 카페 건물 footprint 안인지 */
+function insideCafe(lp) {
+    return !!cafeBounds && lp.x >= cafeBounds.minX && lp.x <= cafeBounds.maxX
+        && lp.z >= cafeBounds.minZ && lp.z <= cafeBounds.maxZ;
+}
+
+/** pos에서 range 이내의 가장 가까운 항목({x,z,y?}) 반환. yTol 지정 시 같은 층(y 근접)만 고려. */
+function nearestInRange(pos, arr, range, yTol) {
+    let best = null, bestD = range * range;
+    for (const s of arr) {
+        if (yTol != null && pos.y != null && Math.abs((s.y || 0) - pos.y) > yTol) continue;   // 다른 층 제외
+        const dx = s.x - pos.x, dz = s.z - pos.z;
+        const d = dx * dx + dz * dz;
+        if (d < bestD) { bestD = d; best = s; }
+    }
+    return best;
+}
+
+/** Enter/Space: 엘리베이터 우선 → 앉기/일어서기 */
+function avatarInteract() {
+    if (!keyboardMoveEnabled || !selectedAvatarId) return;
+    const av = personAvatarMap.get(selectedAvatarId);
+    if (!av) return;
+    if (sittingSeat) { standUp(); return; }
+    // 아바타(월드) → 시설(envGroup 로컬): envGroup은 z만 오프셋. y(층)는 그대로.
+    const lp = { x: av.group.position.x, y: av.group.position.y, z: av.group.position.z - envGroup.position.z };
+    const seat = nearestInRange(lp, seats, SIT_RANGE, 1.5);          // 같은 층 좌석만
+    const ev = insideCafe(lp) ? nearestInRange(lp, elevatorZones, EV_RANGE, 1.5) : null;
+    const d2 = (o) => (o.x - lp.x) ** 2 + (o.z - lp.z) ** 2;
+    // 둘 다 근처면 '더 가까운 것' 우선 (안마의자 옆에서 엘리베이터가 열리지 않도록)
+    if (seat && ev) { if (d2(seat) <= d2(ev)) sitOn(av, seat); else openFloorMenu(); return; }
+    if (seat) { sitOn(av, seat); return; }
+    if (ev) { openFloorMenu(); return; }
+    showSelectToast('가까운 의자·엘리베이터가 없습니다');
+}
+
+/** 좌석에 앉기: 좌석 위치·방향으로 스냅 + 앉은 자세 */
+function sitOn(av, s) {
+    sittingSeat = s;
+    pressedMoveKeys.clear();
+    av.group.position.set(s.x, s.y, s.z + envGroup.position.z);   // 좌석(로컬) → 아바타(월드)
+    av.group.rotation.y = s.yaw;
+    const po = av.personObj;
+    if (po && po.legL) updatePersonAnimation(po, 'sitting', 100, 0, 0, false);
+    showSelectToast('🪑 앉음 — 방향키 또는 Enter로 일어서기');
+}
+
+/** 일어서기: 서 있는 자세 복귀 + 현재 층 높이 유지 */
+function standUp() {
+    const av = selectedAvatarId && personAvatarMap.get(selectedAvatarId);
+    const floorY = sittingSeat ? sittingSeat.y : PERSON_GROUND_Y;
+    sittingSeat = null;
+    if (av) { resetAvatarPose(selectedAvatarId); av.group.position.y = floorY; }
+}
+
+/** 엘리베이터 층 선택 모달 */
+function openFloorMenu() {
+    if (document.getElementById('elevator-menu')) return;
+    const FLOORS = [
+        { n: 1, label: '1F · 텐퍼센트 카페' },
+        { n: 2, label: '2F · 식당' },
+        { n: 3, label: '3F · 매점' },
+        { n: 4, label: '4F · 바디프렌드' },
+    ];
+    const ov = document.createElement('div');
+    ov.id = 'elevator-menu';
+    ov.style.cssText = 'position:fixed; inset:0; z-index:1700; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.6); font-family:sans-serif;';
+    const bx = document.createElement('div');
+    bx.style.cssText = 'background:#1b1b1b; color:#eee; border:2px solid #00C853; border-radius:14px; padding:22px 26px; min-width:260px; text-align:center; box-shadow:0 12px 48px rgba(0,0,0,0.6);';
+    bx.innerHTML = '<div style="font-size:18px; font-weight:800; margin-bottom:14px;">🛗 몇 층으로 이동하시겠어요?</div>';
+    FLOORS.forEach((f) => {
+        const b = document.createElement('button');
+        b.textContent = f.label;
+        b.style.cssText = 'display:block; width:100%; margin:6px 0; background:#2b2b2b; color:#fff; border:1px solid #00C853; border-radius:8px; padding:10px 14px; font-size:14px; cursor:pointer; font-family:inherit;';
+        b.onmouseenter = () => { b.style.background = '#00693a'; };
+        b.onmouseleave = () => { b.style.background = '#2b2b2b'; };
+        b.onclick = () => { ov.remove(); gotoFloor(f.n); };
+        bx.appendChild(b);
+    });
+    const cancel = document.createElement('button');
+    cancel.textContent = '취소';
+    cancel.style.cssText = 'margin-top:10px; background:#444; color:#ccc; border:none; border-radius:8px; padding:7px 16px; font-size:13px; cursor:pointer; font-family:inherit;';
+    cancel.onclick = () => ov.remove();
+    bx.appendChild(cancel);
+    ov.appendChild(bx); document.body.appendChild(ov);
+    ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+}
+
+/** 선택 층으로 아바타 텔레포트 + 카메라 이동 */
+function gotoFloor(n) {
+    const av = selectedAvatarId && personAvatarMap.get(selectedAvatarId);
+    if (!av) return;
+    const c = floorCenters[n];
+    if (!c) return;
+    if (sittingSeat) standUp();
+    pressedMoveKeys.clear();
+    evMenuArmed = false;
+    const wz = c.z + envGroup.position.z;   // 시설(로컬) → 월드 z
+    av.group.position.set(c.x, c.y, wz);   // 해당 층 '센터'(월드)로 이동
+    av.group.rotation.y = 0;
+    persistPersonPosition(selectedAvatarId);
+    // 카메라도 그 층 센터를 비추게(정면-상단에서 층 내부 조망)
+    tweenView({ pos: [c.x + 3, c.y + 6, wz + 15], target: [c.x, c.y + 1.5, wz] }, 800);
+    showSelectToast(`🛗 ${n}층 도착 — 층 센터`);
+}
+
+/** 하단 중앙 상호작용 힌트(의자/엘리베이터/앉음) — animate에서 매 프레임 */
+function updateInteractHint() {
+    if (!sitHintEl) {
+        sitHintEl = document.createElement('div');
+        sitHintEl.style.cssText = 'position:fixed; bottom:130px; left:50%; transform:translateX(-50%); z-index:1600;'
+            + ' background:rgba(0,150,80,0.92); color:#fff; font-family:sans-serif; font-size:15px; font-weight:700; padding:9px 18px;'
+            + ' border-radius:18px; pointer-events:none; display:none; box-shadow:0 4px 16px rgba(0,0,0,0.35);';
+        document.body.appendChild(sitHintEl);
+    }
+    const show = (txt) => { sitHintEl.textContent = txt; sitHintEl.style.display = 'block'; };
+    if (sittingSeat) { show('🪑 앉음 — 방향키 또는 Enter로 일어서기'); return; }
+    // 선택된 아바타만 있으면 됨(이동 모드가 아니어도, 드래그로 발판에 올려도 동작)
+    if (!selectedAvatarId) { sitHintEl.style.display = 'none'; evMenuArmed = true; return; }
+    const av = personAvatarMap.get(selectedAvatarId);
+    if (!av) { sitHintEl.style.display = 'none'; return; }
+    const lp = { x: av.group.position.x, y: av.group.position.y, z: av.group.position.z - envGroup.position.z };   // 월드 → 시설 로컬
+    const seat = nearestInRange(lp, seats, SIT_RANGE, 1.5);          // 같은 층 좌석만
+    const ev = insideCafe(lp) ? nearestInRange(lp, elevatorZones, EV_RANGE, 1.5) : null;
+    const d2 = (o) => (o.x - lp.x) ** 2 + (o.z - lp.z) ** 2;
+    const evCloser = ev && (!seat || d2(ev) < d2(seat));   // 좌석이 더 가까우면 엘리베이터 자동팝업 억제
+    if (ev && evCloser) {
+        if (evMenuArmed && !document.getElementById('elevator-menu')) { evMenuArmed = false; openFloorMenu(); }
+        show('🛗 엘리베이터 — 층을 선택하세요');
+        return;
+    }
+    evMenuArmed = true;   // 발판을 벗어나면 자동 오픈 재장전
+    if (keyboardMoveEnabled && seat) { show('🪑 Enter로 앉기'); return; }
+    sitHintEl.style.display = 'none';
+}
+
+/** 3D 씬 좌표 → 서버 position(2D px) 역변환 후 영속화 (드래그·키보드 이동 공용) */
+function persistPersonPosition(id) {
+    const av = personAvatarMap.get(id);
+    if (!av) return;
+    const pos = scenePosToPerson(av.group.position.x, av.group.position.z);
+    fetch(`http://${location.hostname}:3300/api/people/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ position: pos }),
+    }).catch(() => {});
+}
+
+/** 아바타 걷기 자세를 기본(정지) 자세로 되돌린다(상세 캐릭터만). */
+function resetAvatarPose(id) {
+    const av = personAvatarMap.get(id);
+    if (!av) return;
+    const po = av.personObj;
+    if (!po || !po.armL || !po.legL) return;
+    updatePersonAnimation(po, 'standing', 100, 0, 0, false);   // 미처리 phase → 사지 중립 복귀
+    if (po.pelvis) po.pelvis.position.y = 0.9;                  // 걷기 중 바뀐 골반 높이 원복
+}
+
+/** 선택 링(하이라이트)을 현재 선택·모드 상태에 맞게 부착/표시한다(모드 on + 선택됨일 때만 표시). */
+function refreshSelectionRing() {
+    if (!selectionRing) return;
+    if (selectionRing.parent) selectionRing.parent.remove(selectionRing);
+    if (keyboardMoveEnabled && selectedAvatarId) {
+        const av = personAvatarMap.get(selectedAvatarId);
+        if (av) av.group.add(selectionRing);   // 그룹의 자식 → 아바타를 따라다님
+    }
+}
+
+/** 아바타 선택 변경 + 마커/버튼 갱신 + 토스트 안내 */
+function setSelectedAvatar(id) {
+    selectedAvatarId = id;
+    refreshSelectionRing();
+    updateMoveToggleLabel();
+    const av = id && personAvatarMap.get(id);
+    if (av) showSelectToast(`▶ ${av.displayName || '아바타'} 선택됨 — 방향키로 이동`);
+}
+
+/** 카메라 주시점(controls.target)에서 가장 가까운 아바타 id */
+function nearestAvatarId() {
+    let best = null, bestD = Infinity;
+    for (const [id, av] of personAvatarMap) {
+        const d = av.group.position.distanceToSquared(controls.target);
+        if (d < bestD) { bestD = d; best = id; }
+    }
+    return best;
+}
+
+/** 화면 상단 중앙 토스트(선택/안내). 1.8초 후 사라짐. */
+function showSelectToast(msg) {
+    let el = document.getElementById('avatar-sel-toast');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'avatar-sel-toast';
+        el.style.cssText = 'position:fixed; top:64px; left:50%; transform:translateX(-50%); z-index:1600;'
+            + ' background:rgba(0,190,225,0.95); color:#04222a; font-family:sans-serif; font-weight:700;'
+            + ' font-size:14px; padding:9px 18px; border-radius:20px; box-shadow:0 4px 16px rgba(0,0,0,0.35);'
+            + ' pointer-events:none; transition:opacity 0.3s; opacity:0;';
+        document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.style.opacity = '1';
+    clearTimeout(el._t);
+    el._t = setTimeout(() => { el.style.opacity = '0'; }, 1800);
+}
+
+/** 선택 마커 애니메이션(머리 위 핀 바운스·회전 + 바닥 링 펄스) — animate에서 매 프레임 */
+function updateSelectionIndicator(elapsed) {
+    if (!selectionRing || !selectionRing.parent) return;
+    const pin = selectionRing.userData.pin, ring = selectionRing.userData.ring;
+    pin.position.y = 2.75 + Math.sin(elapsed * 3) * 0.14;      // 위아래 바운스
+    pin.rotation.y = elapsed * 2.0;                            // 회전(반짝이듯)
+    const s = 1 + Math.sin(elapsed * 3) * 0.14;               // 링 펄스
+    ring.scale.set(s, s, 1);
+    ring.material.opacity = 0.55 + 0.35 * (0.5 + 0.5 * Math.sin(elapsed * 3));
+}
+
+/** 좌하단 토글 버튼 라벨/상태 갱신 */
+function updateMoveToggleLabel() {
+    const btn = document.getElementById('avatar-move-toggle');
+    if (!btn) return;
+    const on = keyboardMoveEnabled;
+    const sel = selectedAvatarId && personAvatarMap.get(selectedAvatarId);
+    const who = sel ? (sel.displayName || '선택됨') : null;
+    let sub;
+    if (!on) sub = '<span style="color:#aaa">M 키 또는 클릭으로 켜기</span>';
+    else if (who) sub = `<span style="color:#00E5FF">● ${who}</span> <span style="color:#aaa">방향키로 이동</span>`;
+    else sub = '<span style="color:#ffd600">아바타를 클릭해 선택하세요</span>';
+    btn.innerHTML = `🎮 방향키 이동: <b style="color:${on ? '#0f0' : '#f66'}">${on ? 'ON' : 'OFF'}</b>`
+        + `<div style="font-size:11px;margin-top:3px">${sub}</div>`;
+    btn.style.borderColor = on ? (who ? '#00E5FF' : '#0f0') : '#555';
+}
+
+/** 이동 모드 on/off 토글. force(boolean) 지정 시 그 값으로 설정. */
+function toggleAvatarMove(force) {
+    keyboardMoveEnabled = (typeof force === 'boolean') ? force : !keyboardMoveEnabled;
+    if (keyboardMoveEnabled) {
+        controls.stopListenToKeyEvents();    // 방향키를 카메라 패닝에서 회수
+        // 켜면 (선택이 없을 때) 가까운 아바타를 자동 선택해 즉시 이동 가능하게
+        if (!selectedAvatarId) {
+            const nid = nearestAvatarId();
+            if (nid) setSelectedAvatar(nid);
+            else showSelectToast('이동할 사람 아바타가 없습니다');
+        } else {
+            setSelectedAvatar(selectedAvatarId);   // 현재 선택을 토스트로 재안내
+        }
+    } else {
+        controls.listenToKeyEvents(window);  // 방향키를 카메라 패닝으로 복귀
+        pressedMoveKeys.clear();
+        if (selectedAvatarId) {
+            persistPersonPosition(selectedAvatarId);   // 종료 시 최종 위치 저장
+            resetAvatarPose(selectedAvatarId);         // 걷기 → 정지 자세
+        }
+    }
+    refreshSelectionRing();
+    updateMoveToggleLabel();
+}
+
+/** 프레임 단위 아바타 이동 (animate에서 매 프레임 호출). elapsed: 걷기 모션 위상용 누적 시간 */
+function updateAvatarKeyboardMove(delta, elapsed) {
+    if (!keyboardMoveEnabled || !selectedAvatarId || pressedMoveKeys.size === 0) return;
+    const av = personAvatarMap.get(selectedAvatarId);
+    if (!av || av === draggingAvatar) return;   // 드래그 중이면 키 이동 양보
+    if (sittingSeat) return;                     // 앉은 상태면 이동 안 함(방향키는 keydown에서 기립 처리)
+
+    // 입력(카메라 기준): ↑ 화면 안쪽(카메라 전방), ↓ 뒤, ← 좌, → 우
+    let inF = 0, inR = 0;
+    if (pressedMoveKeys.has('ArrowUp'))    inF += 1;
+    if (pressedMoveKeys.has('ArrowDown'))  inF -= 1;
+    if (pressedMoveKeys.has('ArrowRight')) inR += 1;
+    if (pressedMoveKeys.has('ArrowLeft'))  inR -= 1;
+    if (inF === 0 && inR === 0) return;
+
+    // 카메라의 지면 전방/우측 벡터(y평면 투영) — 화면에 보이는 방향과 일치
+    let fwdX = controls.target.x - camera.position.x;
+    let fwdZ = controls.target.z - camera.position.z;
+    const fl = Math.hypot(fwdX, fwdZ) || 1;
+    fwdX /= fl; fwdZ /= fl;
+    const rgtX = -fwdZ, rgtZ = fwdX;   // 전방 × up = 화면 우측
+
+    // 카메라 기준 이동 벡터 → 정규화 → 속도 적용
+    let mx = fwdX * inF + rgtX * inR;
+    let mz = fwdZ * inF + rgtZ * inR;
+    const ml = Math.hypot(mx, mz) || 1;
+    mx /= ml; mz /= ml;
+    const step = AVATAR_MOVE_SPEED * delta;
+    const prevY = av.group.position.y;
+    const onUpperFloor = prevY > 1.5;   // 2층 이상(슬래브 위)
+    let nx = av.group.position.x + mx * step;
+    let nz = av.group.position.z + mz * step;
+    // 상층에서는 건물 안(footprint)으로 이동 제한 → 밖으로 나가 1층으로 떨어지는 것 방지(건물 내부에서만 이동).
+    if (onUpperFloor && cafeBounds) {
+        const off = envGroup.position.z;
+        const wMinX = cafeBounds.minX + 0.4, wMaxX = cafeBounds.maxX - 0.4;
+        const wMinZ = cafeBounds.minZ + off + 0.4, wMaxZ = cafeBounds.maxZ + off - 0.4;
+        const px = av.group.position.x, pz = av.group.position.z;
+        const prevInside = px >= wMinX - 0.6 && px <= wMaxX + 0.6 && pz >= wMinZ - 0.6 && pz <= wMaxZ + 0.6;
+        if (prevInside) {   // 이미 건물 안일 때만 제한(외부 계단 등은 예외)
+            nx = Math.min(Math.max(nx, wMinX), wMaxX);
+            nz = Math.min(Math.max(nz, wMinZ), wMaxZ);
+        }
+    }
+    av.group.position.x = nx;
+    av.group.position.z = nz;
+
+    // 발밑 높이: 걸어다닐 수 있는 면(슬래브·계단·데크·플랫폼) 위로 스냅
+    const STEP_UP = 0.55;
+    _rayOrigin.set(nx, prevY + STEP_UP, nz);
+    _downRay.set(_rayOrigin, _downDir);
+    _downRay.far = STEP_UP + 8;
+    const hits = _downRay.intersectObjects(walkables, false);
+    if (hits.length) av.group.position.y = hits[0].point.y;
+    else if (!onUpperFloor) av.group.position.y = PERSON_GROUND_Y;   // 지상=지면 / 상층=이전 y 유지(낙하 방지)
+
+    // 아바타 메시가 이동 방향을 바라보게 부드럽게 회전(+z가 정면)
+    const wantRY = Math.atan2(mx, mz);
+    let dRY = wantRY - av.group.rotation.y;
+    dRY = Math.atan2(Math.sin(dRY), Math.cos(dRY));                        // 최단 회전각
+    av.group.rotation.y += dRY * (1 - Math.exp(-12 * delta));
+
+    // 걷기 모션(양팔·다리 흔들기) — 팔·다리 구조가 있는 상세 캐릭터에만 적용
+    const po = av.personObj;
+    if (po && po.armL && po.legL) {
+        updatePersonAnimation(po, 'leisure-walking', 100, elapsed, delta, false);
+    }
+
+    // ---- 팔로우 카메라: 시야 각도·줌·높이 유지, 아바타를 따라 평행 이동만 (회전 없음 → 어지럼 없음) ----
+    // controls.target을 아바타 눈높이로 부드럽게 옮기고, 카메라도 '타깃 이동량만큼' 함께 옮겨
+    // 상대 오프셋(각도·거리·높이)을 그대로 유지한다. (controls.update() 뒤에 호출되어 이번 프레임에 반영)
+    const desired = new THREE.Vector3(av.group.position.x, av.group.position.y + FOLLOW_TARGET_Y, av.group.position.z);
+    const a = 1 - Math.exp(-FOLLOW_LERP * delta);   // 프레임레이트 독립 스무딩
+    const prevTX = controls.target.x, prevTY = controls.target.y, prevTZ = controls.target.z;
+    controls.target.lerp(desired, a);
+    camera.position.x += controls.target.x - prevTX;
+    camera.position.y += controls.target.y - prevTY;
+    camera.position.z += controls.target.z - prevTZ;
+}
+
+// 방향키 keydown/keyup — 이동 모드일 때만 방향키를 소비한다.
+// capture 단계에서 처리해 OrbitControls보다 먼저 가로챈다(stopListenToKeyEvents로 이미 해제되지만 이중 안전).
+window.addEventListener('keydown', (e) => {
+    // M 키: 이동 모드 토글 (입력 필드 포커스 중이면 무시)
+    if (e.code === 'KeyM') {
+        const t = e.target;
+        const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+        if (!typing) { toggleAvatarMove(); return; }
+    }
+    // Enter: 앉기/일어서기 · 엘리베이터 층 선택(수동) — 상태별 안내 포함
+    if (e.code === 'Enter') {
+        const t = e.target;
+        const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+        if (!typing && !document.getElementById('elevator-menu')) {
+            e.preventDefault();
+            if (!keyboardMoveEnabled) { showSelectToast('먼저 M키(또는 🎮 버튼)로 이동 모드를 켜세요'); return; }
+            if (!selectedAvatarId) { showSelectToast('이동할 아바타를 클릭해 선택하세요'); return; }
+            avatarInteract();
+            return;
+        }
+    }
+    if (keyboardMoveEnabled && MOVE_KEYS.has(e.code)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (sittingSeat) standUp();                    // 앉은 상태에서 방향키 → 먼저 일어섬
+        if (selectedAvatarId) pressedMoveKeys.add(e.code);
+    }
+}, true);
+
+window.addEventListener('keyup', (e) => {
+    if (MOVE_KEYS.has(e.code) && pressedMoveKeys.has(e.code)) {
+        pressedMoveKeys.delete(e.code);
+        if (pressedMoveKeys.size === 0 && selectedAvatarId) {
+            persistPersonPosition(selectedAvatarId);   // 이동을 멈추면 위치 저장
+            resetAvatarPose(selectedAvatarId);         // 걷기 → 정지 자세
+        }
+    }
+});
+
+// 선택 하이라이트 마커 (머리 위 핀 + 바닥 링) 생성 — 크게 눈에 띄게
+(function initSelectionMarker() {
+    selectionRing = new THREE.Group();   // 이제 마커 그룹(링 + 핀)
+    // 바닥 링(펄스)
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.72, 32),
+        new THREE.MeshBasicMaterial({ color: 0x00E5FF, side: THREE.DoubleSide, transparent: true, opacity: 0.85, depthWrite: false }));
+    ring.rotation.x = -Math.PI / 2; ring.position.y = 0.06;
+    selectionRing.add(ring);
+    // 머리 위 역삼각 핀(아래를 가리킴, 바운스·회전)
+    const pin = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.6, 4), new THREE.MeshBasicMaterial({ color: 0x00E5FF }));
+    pin.rotation.x = Math.PI; pin.position.y = 2.75;
+    selectionRing.add(pin);
+    selectionRing.userData.ring = ring;
+    selectionRing.userData.pin = pin;
+})();
+
+// 좌하단 토글 버튼 생성
+(function initMoveToggleButton() {
+    const btn = document.createElement('button');
+    btn.id = 'avatar-move-toggle';
+    btn.style.cssText = [
+        'position:absolute', 'left:10px', 'bottom:10px', 'z-index:20',
+        'background:rgba(0,0,0,0.6)', 'color:#fff', 'border:1px solid #555',
+        'border-radius:8px', 'padding:8px 12px', 'font-family:monospace',
+        'font-size:12px', 'cursor:pointer', 'backdrop-filter:blur(4px)',
+        'text-align:left', 'min-width:190px',
+    ].join(';');
+    btn.addEventListener('click', () => toggleAvatarMove());
+    document.body.appendChild(btn);
+    updateMoveToggleLabel();
 })();
 
 // ---- WebSocket ----
@@ -3383,6 +4866,17 @@ function connectWS() {
                     d.subject ? `회의: ${d.subject}` : '화상회의가 시작되었습니다.',
                     { tag: `meeting-${d.personId || 'x'}`, onClick: () => focusAvatar(d.personId) });
             }
+        } else if (d.type === 'order-reminder') {
+            // ORDER-01: 월 09:00 — 음료 고르기 알림(클릭 시 메뉴 오픈)
+            notify('system', '텐퍼센트 커피 주문', '오늘 마실 음료를 골라 주문에 담아주세요! (마감 09:18)',
+                { tag: 'order-reminder', ttl: 15000, onClick: () => { if (window.__showCafeMenu) window.__showCafeMenu(); } });
+        } else if (d.type === 'order-deadline') {
+            // ORDER-01: 월 09:18 — 주문 마감 알림창 + OS 알림
+            notify('system', '커피 주문 마감', '09:20에 MOM방으로 주문이 공유됩니다.', { tag: 'order-deadline', ttl: 15000 });
+            if (window.__orderDeadlineAlert) window.__orderDeadlineAlert();
+        } else if (d.type === 'order-cleared') {
+            // ORDER-01: 월 10:00 — 주문 목록 clear
+            if (window.__clearOrders) window.__clearOrders();
         }
     };
     ws.onclose = () => { document.getElementById('conn-status').textContent = 'Reconnecting...'; document.getElementById('conn-status').style.color = '#f00'; setTimeout(connectWS, 3000); };
@@ -3413,7 +4907,7 @@ async function ensureSelfAvatar(account) {
         // people-update 브로드캐스트로 아바타가 자동 표시됨
     } catch { /* noop */ }
 }
-initAuthGate({ onAuthenticated: ensureSelfAvatar });
+initAuthGate({ onAuthenticated: (account) => { ensureSelfAvatar(account); if (window.__renderOrders) window.__renderOrders(); } });
 
 // ---- 점심 게임 초기화 ----
 initLunchGame({

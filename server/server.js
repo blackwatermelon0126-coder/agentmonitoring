@@ -619,6 +619,132 @@ app.delete('/api/people/:id', (req, res) => {
     res.json({ ok: true });
 });
 
+// ══════════════════════════════════════════════════════════════════
+// 텐퍼센트 커피 주문 (ORDER-01)
+//  - 브라우저(사용자별)가 주문을 POST /api/orders 로 동기화(집계본을 서버 보관).
+//  - 월요일(공휴일 제외) 스케줄: 09:00 알림 · 09:18 마감 · 09:20 MOM방 공유 · 10:00 clear.
+//  - 서버 로컬 시간(KST 가정) 기준. 신분 격리 유지: MOM 전송은 서버 계정 토큰 사용.
+// ══════════════════════════════════════════════════════════════════
+const ORDERS_PATH = process.env.ORDERS_STORE || path.join(__dirname, 'data', 'orders.json');
+
+function loadOrders() {
+    try { if (!existsSync(ORDERS_PATH)) return []; return JSON.parse(readFileSync(ORDERS_PATH, 'utf8')); }
+    catch { return []; }
+}
+function saveOrdersFile(list) {
+    const dir = path.dirname(ORDERS_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(ORDERS_PATH, JSON.stringify(list, null, 2), 'utf8');
+}
+/** 전체 접속 클라이언트 브로드캐스트 */
+function broadcast(msg) {
+    const s = JSON.stringify(msg);
+    clients.forEach(ws => { if (ws.readyState === 1) ws.send(s); });
+}
+
+let orders = loadOrders();   // [{ email, name, items:[{drink,temp,qty,option}], updatedAt }]
+
+/** GET /api/orders — 전체 사용자 주문 집계 */
+app.get('/api/orders', (req, res) => res.json(orders));
+
+/** POST /api/orders — 본인 주문 upsert { email, name, items[] } */
+app.post('/api/orders', (req, res) => {
+    const { email, name, items } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'email 필수' });
+    const key = String(email).toLowerCase();
+    const rec = { email, name: name || email, items: Array.isArray(items) ? items : [], updatedAt: new Date().toISOString() };
+    const idx = orders.findIndex(o => (o.email || '').toLowerCase() === key);
+    if (idx === -1) orders.push(rec); else orders[idx] = rec;
+    saveOrdersFile(orders);
+    res.json({ ok: true, users: orders.length });
+});
+
+/** 전체 주문 clear(내부 스케줄 + 수동 트리거 공용) */
+function clearAllOrders() {
+    orders = [];
+    saveOrdersFile(orders);
+    broadcast({ type: 'order-cleared' });
+    logger.info({ event: 'orders_cleared' }, '주문 전체 clear');
+}
+/** POST /api/orders/clear — 수동 clear (loopback) */
+app.post('/api/orders/clear', requireLoopback, (req, res) => { clearAllOrders(); res.json({ ok: true }); });
+
+// ── 한국 공휴일(스케줄 제외) — 필요 시 매년 갱신 ──────────────────
+const KR_HOLIDAYS = new Set([
+    // 2026
+    '2026-01-01', '2026-02-16', '2026-02-17', '2026-02-18', '2026-03-01', '2026-03-02',
+    '2026-05-05', '2026-05-24', '2026-05-25', '2026-06-06', '2026-08-15', '2026-08-17',
+    '2026-09-24', '2026-09-25', '2026-09-26', '2026-10-03', '2026-10-05', '2026-10-09', '2026-12-25',
+    // 2027
+    '2027-01-01', '2027-02-06', '2027-02-07', '2027-02-08', '2027-02-09', '2027-03-01',
+    '2027-05-05', '2027-05-13', '2027-06-06', '2027-08-15', '2027-08-16',
+    '2027-09-14', '2027-09-15', '2027-09-16', '2027-10-03', '2027-10-04', '2027-10-09', '2027-10-11', '2027-12-25',
+]);
+const pad2 = (n) => String(n).padStart(2, '0');
+const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+/** 주문 목록 → MOM 공유용 텍스트 */
+function buildOrderMessage(list) {
+    const lines = [`☕ 텐퍼센트 커피 주문 (${ymd(new Date())} 월요일)`, ''];
+    let total = 0;
+    for (const o of list) {
+        lines.push(`● ${o.name}`);
+        for (const it of o.items) {
+            const qty = Number(it.qty) || 1;
+            lines.push(`   - ${it.drink}/${it.temp}/${qty}잔/${it.option}`);
+            total += qty;
+        }
+    }
+    lines.push('', `합계 ${total}잔 · ${list.length}명`);
+    return lines.join('\n');
+}
+/** 09:20 — 전체 주문을 취합해 MOM 채팅방에 한 메시지로 전송(서버 계정) */
+async function shareOrdersToMOM() {
+    const withItems = orders.filter(o => Array.isArray(o.items) && o.items.length);
+    if (!withItems.length) { logger.info({ event: 'order_share_skip' }, 'MOM 공유 스킵 — 주문 없음'); return; }
+    const token = await refreshTokenIfNeeded();
+    if (!token) { logger.warn({ event: 'order_share_no_token' }, 'MOM 공유 실패 — 서버 토큰 없음'); return; }
+    let chats;
+    try { chats = await listChats(token, getMe()); }
+    catch (e) { logger.warn({ event: 'order_share_list_error', err: e.message }, 'MOM 공유 실패 — 채팅 목록 조회 오류'); return; }
+    const mom = chats.find(c => (c.title || '').toUpperCase().includes('MOM'));
+    if (!mom) { logger.warn({ event: 'order_share_no_mom' }, 'MOM 공유 실패 — MOM 채팅방 없음'); return; }
+    try {
+        await sendMessage(token, mom.chatId, buildOrderMessage(withItems));
+        logger.info({ event: 'order_shared', chatId: mom.chatId, users: withItems.length }, 'MOM 공유 완료');
+    } catch (e) {
+        logger.warn({ event: 'order_share_send_error', err: e.message }, 'MOM 전송 실패');
+    }
+}
+
+// ── 월요일 스케줄러(공휴일 제외) — 30초마다 확인, 슬롯당 1회 ──────
+const ORDER_SCHEDULE = [
+    { hm: '09:00', run: () => broadcast({ type: 'order-reminder' }) },
+    { hm: '09:18', run: () => broadcast({ type: 'order-deadline' }) },
+    { hm: '09:20', run: () => { shareOrdersToMOM(); } },
+    { hm: '10:00', run: () => clearAllOrders() },
+];
+const firedSlots = new Set();
+function tickOrderSchedule() {
+    const now = new Date();
+    if (now.getDay() !== 1) return;                 // 월요일만
+    const dateStr = ymd(now);
+    if (KR_HOLIDAYS.has(dateStr)) return;           // 공휴일 제외
+    const hm = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+    for (const slot of ORDER_SCHEDULE) {
+        if (slot.hm !== hm) continue;
+        const key = `${dateStr} ${hm}`;
+        if (firedSlots.has(key)) continue;          // 슬롯당 1회
+        firedSlots.add(key);
+        logger.info({ event: 'order_schedule_fire', slot: hm }, `주문 스케줄 실행: ${hm}`);
+        try { slot.run(); } catch (e) { logger.warn({ event: 'order_schedule_error', err: e.message }, '스케줄 실행 오류'); }
+    }
+}
+function startOrderScheduler() {
+    setInterval(tickOrderSchedule, 30 * 1000);
+    logger.info({ event: 'order_scheduler_started' }, '주문 스케줄러 시작(월 09:00·09:18·09:20·10:00, 공휴일 제외)');
+}
+
 const PORT = 3300;
 
 // 직접 실행 시에만 포트 바인딩 (테스트에서는 바인딩 없이 import 가능)
@@ -630,6 +756,8 @@ if (process.argv[1] === __filename) {
             getPeople: () => people,
             broadcast: (msg) => clients.forEach(ws => { if (ws.readyState === 1) ws.send(JSON.stringify(msg)); }),
         });
+        // ORDER-01: 텐퍼센트 커피 주문 월요일 스케줄러 시작
+        startOrderScheduler();
     });
 }
 
