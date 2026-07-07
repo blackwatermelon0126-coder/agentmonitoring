@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createFactory, updateFactory } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
-import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, createICharacter, createWatermelonCharacter, updatePersonAnimation } from './character.js';
+import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, updatePersonAnimation, createICharacter, createWatermelonCharacter, createBuriburimonCharacter } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
 import { initLunchGame, triggerLunchGame } from './lunchgame.js';
 import { initChatPanel, openChat, handleTeamsNotification, isChatOpen } from './chat-panel.js';
@@ -2290,6 +2290,170 @@ ball.position.set(11.5, 0.12, 1.5);
 ball.castShadow = true;
 scene.add(ball);
 
+// ============================================================
+// 강아지·고양이 패트롤 + 재롱(클릭 인터랙션) 시스템
+// ============================================================
+
+// 순찰 웨이포인트 — 사무실 3곳 · 야외 회의실 3곳 · 풀사이드 · 공원 · 야외 중간
+const ANIMAL_PATROL_WPS = [
+    { x: -12, z:  -1 },  // 사무실 좌측
+    { x: -10, z:   2 },  // 사무실 우측
+    { x:  -8, z:  -2 },  // 사무실 앞
+    { x:   1, z:  10 },  // Guam 야외 회의실
+    { x:  16, z:   5 },  // Okinawa 야외 회의실
+    { x:  16, z:  18 },  // Boracay 야외 회의실
+    { x:   8, z:   1 },  // 풀사이드
+    { x:   5, z:  -3 },  // 야외 공원
+    { x:  12, z:   8 },  // 야외 중간
+];
+
+// 강아지 패트롤 상태 (사무실에서 출발)
+const dogState = {
+    wpIdx: 0, state: 'idle', timer: 0.8, trickT: 0,
+    targetX: ANIMAL_PATROL_WPS[0].x, targetZ: ANIMAL_PATROL_WPS[0].z,
+    pickMeshes: [],
+};
+// 고양이 패트롤 상태 (강아지와 엇갈리게 Guam부터)
+const catState = {
+    wpIdx: 3, state: 'idle', timer: 2.2, trickT: 0,
+    targetX: ANIMAL_PATROL_WPS[3].x, targetZ: ANIMAL_PATROL_WPS[3].z,
+    pickMeshes: [], bodyMesh: null,
+};
+
+// 강아지 초기 위치 → 첫 웨이포인트(사무실)
+dog.group.position.set(ANIMAL_PATROL_WPS[0].x, 0, ANIMAL_PATROL_WPS[0].z);
+
+// raycaster pick 메쉬 등록 (클릭 감지용)
+dog.group.traverse(o => { if (o.isMesh) { o.userData.animalType = 'dog'; dogState.pickMeshes.push(o); } });
+sleepingCat.traverse(o => { if (o.isMesh) { o.userData.animalType = 'cat'; catState.pickMeshes.push(o); } });
+catState.bodyMesh = sleepingCat.children[0]; // body capsule (rotation.z = π/2 = 수평)
+
+/** 다음 목표 결정: 30% 확률로 근처 사용자 아바타 → 나머지는 순서대로 웨이포인트 */
+function _nextAnimalTarget(state, group) {
+    if (Math.random() < 0.30 && personAvatarMap.size > 0) {
+        let best = null, bestD = Infinity;
+        personAvatarMap.forEach(av => {
+            const dx = av.group.position.x - group.position.x;
+            const dz = av.group.position.z - group.position.z;
+            const d = Math.sqrt(dx * dx + dz * dz);
+            if (d > 1.5 && d < bestD) { bestD = d; best = av.group.position; }
+        });
+        if (best) return { x: best.x, z: best.z, isApproach: true };
+    }
+    state.wpIdx = (state.wpIdx + 1) % ANIMAL_PATROL_WPS.length;
+    const wp = ANIMAL_PATROL_WPS[state.wpIdx];
+    return { x: wp.x, z: wp.z, isApproach: false };
+}
+
+/** 강아지 재롱 — 점프 → 제자리 스핀 → 엎드려(bow) → 재점프 (0~2.5s) */
+function _animDogTrick(t, elapsed, delta) {
+    if (t < 0.45) {
+        dog.group.position.y = Math.sin(t / 0.45 * Math.PI) * 0.55;
+        dog.tail.rotation.z  = -1.8;
+        dog.tail.rotation.y  = Math.sin(elapsed * 18) * 1.2;
+    } else if (t < 1.15) {
+        dog.group.position.y = 0;
+        dog.group.rotation.y += delta * 13;  // 스핀
+        dog.tail.rotation.z  = -1.8;
+        dog.tail.rotation.y  = Math.sin(elapsed * 18) * 1.2;
+    } else if (t < 2.0) {
+        const p = Math.min(1, (t - 1.15) / 0.45);
+        dog.head.position.y  = 0.42 - p * 0.22;   // 머리 내리기(엎드려)
+        dog.tail.rotation.z  = -1.5 - p * 0.3;
+        dog.tail.rotation.y  = Math.sin(elapsed * 22) * 1.5;
+        dog.group.position.y = 0;
+    } else {
+        dog.head.position.y  = 0.42;
+        dog.tail.rotation.z  = -0.7;
+        dog.group.position.y = Math.abs(Math.sin((t - 2.0) / 0.5 * Math.PI * 2)) * 0.22;
+    }
+    dog.legs.forEach((leg, i) => { leg.rotation.x = Math.sin(elapsed * 13 + i * Math.PI / 2) * 0.75; });
+}
+
+/** 고양이 재롱 — 뒷발 서기 → 앞발 흔들기 → 통통 점프 → 눕기 (0~2.5s) */
+function _animCatTrick(t, elapsed) {
+    const body = catState.bodyMesh;
+    if (t < 0.55) {
+        // 뒷발로 일어나기 (몸통 수평 → 수직)
+        if (body) body.rotation.z = (1 - t / 0.55) * Math.PI / 2;
+        sleepingCat.position.y = (t / 0.55) * 0.08;
+    } else if (t < 1.5) {
+        // 앞발 흔들기 (그룹 좌우 기울기)
+        if (body) body.rotation.z = 0;
+        const wave = Math.sin((t - 0.55) * Math.PI * 3.8);
+        sleepingCat.rotation.z  = wave * 0.28;
+        sleepingCat.position.y  = 0.08 + Math.abs(wave) * 0.08;
+    } else if (t < 2.05) {
+        // 통통 점프
+        sleepingCat.rotation.z = 0;
+        sleepingCat.position.y = Math.abs(Math.sin((t - 1.5) * Math.PI * 3.5)) * 0.28;
+    } else {
+        // 다시 눕기 (몸통 수직 → 수평)
+        sleepingCat.rotation.z = 0;
+        const p = Math.min(1, (t - 2.05) / 0.45);
+        if (body) body.rotation.z = p * Math.PI / 2;
+        sleepingCat.position.y = 0;
+    }
+}
+
+/** 강아지·고양이 공통 패트롤 업데이트 — animate() 루프에서 매 프레임 호출 */
+function updateAnimalPatrol(state, group, speed, elapsed, delta, isdog) {
+
+    // ── 재롱 상태 ──
+    if (state.state === 'trick') {
+        state.trickT += delta;
+        if (isdog) _animDogTrick(state.trickT, elapsed, delta);
+        else       _animCatTrick(state.trickT, elapsed);
+        if (state.trickT > 2.5) {
+            state.state  = 'idle';
+            state.timer  = 0.8 + Math.random() * 1.0;
+            state.trickT = 0;
+            group.position.y = 0;
+            if (isdog) { dog.tail.rotation.z = -0.7; dog.tail.rotation.y = 0; }
+            else { sleepingCat.rotation.z = 0; if (catState.bodyMesh) catState.bodyMesh.rotation.z = Math.PI / 2; }
+        }
+        return;
+    }
+
+    // ── 대기 상태 ──
+    if (state.state === 'idle') {
+        state.timer -= delta;
+        if (!isdog) group.scale.y = 1 + Math.sin(elapsed * 1.4) * 0.04; // 고양이 호흡
+        if (state.timer <= 0) {
+            const t = _nextAnimalTarget(state, group);
+            state.targetX = t.x; state.targetZ = t.z;
+            state.state = t.isApproach ? 'approach' : 'patrol';
+            if (!isdog) { group.position.y = 0; group.scale.y = 1; } // 고양이: 바닥으로 내려옴
+        }
+        return;
+    }
+
+    // ── 이동 상태 (patrol / approach) ──
+    const dx = state.targetX - group.position.x;
+    const dz = state.targetZ - group.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const arrivalDist = state.state === 'approach' ? 1.8 : 0.45;
+
+    if (dist < arrivalDist) {
+        group.position.set(state.targetX, 0, state.targetZ);
+        if (state.state === 'approach') { state.state = 'trick'; state.trickT = 0; }
+        else { state.state = 'idle'; state.timer = 2.0 + Math.random() * 3.0; }
+        return;
+    }
+
+    const nx = dx / dist, nz = dz / dist;
+    group.position.x += nx * speed * delta;
+    group.position.z += nz * speed * delta;
+    group.rotation.y  = Math.atan2(nx, nz);
+    group.position.y  = Math.abs(Math.sin(elapsed * (isdog ? 9 : 5.5))) * 0.055;
+
+    if (isdog) {
+        dog.legs.forEach((leg, i) => { leg.rotation.x = Math.sin(elapsed * 10 + i * Math.PI / 2) * 0.5; });
+        dog.tail.rotation.y = Math.sin(elapsed * 8) * 0.6;
+        dog.tail.rotation.z = -0.7;
+    }
+}
+
 
 function randomTraits() {
     return { gender: pick(GENDERS), skinColor: pick(SKIN_COLORS), hairColor: pick(HAIR_COLORS), hairStyle: pick(HAIR_STYLES), shirtColor: pick(SHIRT_COLORS), pantsColor: pick(PANTS_COLORS), shoeColor: pick(SHOE_COLORS), accessory: Math.random() < 0.4 ? pick(ACCESSORIES.filter(a => a !== 'none')) : 'none' };
@@ -2774,6 +2938,38 @@ let ROLE_COLOR = {};
 // ============================================
 const clock = new THREE.Clock();
 
+// 키보드 이동용 사전 할당 벡터 (매 프레임 GC 방지)
+const _kbFwd = new THREE.Vector3();
+const _kbRgt = new THREE.Vector3();
+const _kbUp  = new THREE.Vector3(0, 1, 0);
+
+/** 입력 포커스가 텍스트 필드에 있으면 true — 채팅 입력 중 이동 방지 */
+function _isTyping() {
+    const el = document.activeElement;
+    if (!el) return false;
+    const t = el.tagName;
+    return t === 'INPUT' || t === 'TEXTAREA' || el.isContentEditable;
+}
+
+/** 내 캐릭터 현재 3D 위치를 서버에 저장 (debounce 후 호출) */
+function _saveMyPosition() {
+    if (!myPersonId) return;
+    const av = personAvatarMap.get(myPersonId);
+    if (!av) return;
+    const pos = scenePosToPerson(av.group.position.x, av.group.position.z);
+    fetch(`http://localhost:3300/api/people/${myPersonId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ position: pos }),
+    }).catch(() => {});
+}
+
+/** 300ms 디바운스 — 키를 누르고 있는 동안 매 프레임 저장하지 않고 멈출 때 한 번만 저장 */
+function _scheduleSaveMyPosition() {
+    if (_savePositionTimer) clearTimeout(_savePositionTimer);
+    _savePositionTimer = setTimeout(_saveMyPosition, 300);
+}
+
 function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
@@ -2782,6 +2978,63 @@ function animate() {
     updateAvatarKeyboardMove(delta, elapsed);
     updateSelectionIndicator(elapsed);
     updateInteractHint();
+
+    // ── 내 캐릭터 키보드 이동 (WASD / 화살표) ──
+    if (myPersonId && keysDown.size > 0 && !_isTyping()) {
+        const av = personAvatarMap.get(myPersonId);
+        if (av) {
+            const SPEED = 5; // 3D 단위/초
+            // 카메라가 바라보는 수평 방향 기준으로 이동 — 직관적인 조작감
+            camera.getWorldDirection(_kbFwd); _kbFwd.y = 0; _kbFwd.normalize();
+            _kbRgt.crossVectors(_kbFwd, _kbUp).normalize();
+
+            let mx = 0, mz = 0;
+            if (keysDown.has('KeyW') || keysDown.has('ArrowUp'))    { mx += _kbFwd.x; mz += _kbFwd.z; }
+            if (keysDown.has('KeyS') || keysDown.has('ArrowDown'))  { mx -= _kbFwd.x; mz -= _kbFwd.z; }
+            if (keysDown.has('KeyA') || keysDown.has('ArrowLeft'))  { mx -= _kbRgt.x; mz -= _kbRgt.z; }
+            if (keysDown.has('KeyD') || keysDown.has('ArrowRight')) { mx += _kbRgt.x; mz += _kbRgt.z; }
+
+            if (mx !== 0 || mz !== 0) {
+                const len = Math.sqrt(mx * mx + mz * mz);
+                av.group.position.x += (mx / len) * SPEED * delta;
+                av.group.position.z += (mz / len) * SPEED * delta;
+                av.group.rotation.y = Math.atan2(mx / len, mz / len); // 이동 방향으로 캐릭터 회전
+                _scheduleSaveMyPosition();
+            }
+        }
+    }
+
+    // ── 내 캐릭터 걷기 애니메이션 (손발 움직임) ──
+    if (myPersonId) {
+        const walkAv = personAvatarMap.get(myPersonId);
+        if (walkAv) {
+            const isWalking = keysDown.size > 0 && !_isTyping();
+            if (walkAv.personObj && walkAv.personObj.legL) {
+                // DetailedPerson — 기존 updatePersonAnimation 활용
+                updatePersonAnimation(walkAv.personObj, isWalking ? 'walking-in' : 'idle', 100, elapsed, delta, false);
+            } else {
+                // Watermelon / Buriburimon — userData.walkLimbType 태그된 메쉬 직접 제어
+                if (!walkAv._wl) {
+                    walkAv._wl = {};
+                    walkAv.group.traverse(o => { if (o.userData.walkLimbType) walkAv._wl[o.userData.walkLimbType] = o; });
+                }
+                const wl = walkAv._wl;
+                if (isWalking) {
+                    const wp = elapsed * 4;
+                    if (wl.armL) wl.armL.rotation.x = Math.sin(wp + Math.PI) * 0.5;
+                    if (wl.armR) wl.armR.rotation.x = Math.sin(wp) * 0.5;
+                    if (wl.legL) wl.legL.rotation.x = Math.sin(wp) * 0.55;
+                    if (wl.legR) wl.legR.rotation.x = Math.sin(wp + Math.PI) * 0.55;
+                } else {
+                    // 정지 시 자연스럽게 중립 복귀
+                    if (wl.armL) wl.armL.rotation.x *= 0.85;
+                    if (wl.armR) wl.armR.rotation.x *= 0.85;
+                    if (wl.legL) wl.legL.rotation.x *= 0.85;
+                    if (wl.legR) wl.legR.rotation.x *= 0.85;
+                }
+            }
+        }
+    }
 
     updateFloatingTexts(delta);
     updateFactory(delta, elapsed);
@@ -2907,31 +3160,9 @@ function animate() {
         }
         waterPositions.needsUpdate = true;
     }
-    // 고양이 호흡 (몸 약간 부풀)
-    if (typeof sleepingCat !== 'undefined') {
-        sleepingCat.scale.y = 1 + Math.sin(elapsed * 1.4) * 0.04;
-    }
-
-    // 강아지 + 공 (앞뒤로 공 따라가기)
-    if (typeof dog !== 'undefined' && typeof ball !== 'undefined') {
-        const ballX = 11.5 + Math.sin(elapsed * 1.3) * 1.6;
-        const ballBounce = Math.abs(Math.sin(elapsed * 4)) * 0.35;
-        ball.position.set(ballX, 0.12 + ballBounce, 1.5);
-        ball.rotation.x += delta * 8;
-        // 강아지가 공을 쫓아감 (살짝 뒤처짐)
-        const dogTarget = ballX - 0.7;
-        dog.group.position.x += (dogTarget - dog.group.position.x) * delta * 3;
-        const ddx = ballX - dog.group.position.x;
-        if (Math.abs(ddx) > 0.05) dog.group.rotation.y = ddx > 0 ? 0 : Math.PI;
-        // 다리 달리기
-        dog.legs.forEach((leg, i) => {
-            leg.rotation.x = Math.sin(elapsed * 10 + i * Math.PI / 2) * 0.5;
-        });
-        // 꼬리 흔들기
-        dog.tail.rotation.y = Math.sin(elapsed * 8) * 0.6;
-        // 살짝 점프
-        dog.group.position.y = Math.abs(Math.sin(elapsed * 5)) * 0.05;
-    }
+    // 강아지·고양이 패트롤 + 재롱 업데이트
+    updateAnimalPatrol(dogState, dog.group, 2.8, elapsed, delta, true);
+    updateAnimalPatrol(catState, sleepingCat, 1.8, elapsed, delta, false);
 
     // 풍선 흔들림
     balloons.forEach(b => {
@@ -3157,6 +3388,7 @@ const personAvatarMap = new Map();
 // 위치 덮어쓰기를 막아 사용자가 끄는 손맛을 유지한다.
 let draggingAvatar = null;
 
+<<<<<<< Updated upstream
 // ---- 선택 아바타 방향키 이동 (게임식 이동) ----
 // keyboardMoveEnabled: 좌하단 토글(또는 M키)로 on/off. on이면 방향키가 카메라 패닝 대신
 //   선택된 아바타를 카메라 기준(전/후/좌/우)으로 이동시킨다.
@@ -3173,6 +3405,12 @@ let sitHintEl = null;      // 상호작용 힌트 DOM (updateInteractHint에서 
 let evMenuArmed = true;    // 발판 진입 시 층 메뉴 1회 자동 오픈(발판을 벗어나면 재장전)
 const pressedMoveKeys = new Set();
 let selectionRing = null;
+=======
+// 키보드 이동 — 로그인 사용자 아바타 ID · 현재 눌린 키 · 저장 디바운스 타이머
+let myPersonId = null;
+const keysDown = new Set();
+let _savePositionTimer = null;
+>>>>>>> Stashed changes
 
 animate();
 
@@ -3729,6 +3967,288 @@ function worldToScreen(worldPos) {
     buildOkinawa(16, 5);
 }
 
+// ============================================================
+// 🏢 6실 오피스 단지 — 중정(中庭) 배치
+// ============================================================
+{
+    const OCX = -35, OCZ = -25;
+    const OCH = 3.2;
+    const OWT = 0.18;
+    const DW  = 2.8;
+    const DH  = 2.4;
+
+    const ocWallMat  = new THREE.MeshStandardMaterial({ color: 0xf0ece4, roughness: 0.85 });
+    const ocRoofMat  = new THREE.MeshStandardMaterial({ color: 0x8d9fa8, roughness: 0.7, metalness: 0.2 });
+    const ocFloorMat = new THREE.MeshStandardMaterial({ color: 0xdcd0b4, roughness: 0.9 });
+    const ocCourtMat = new THREE.MeshStandardMaterial({ color: 0xc8bca0, roughness: 0.95 });
+    const ocPathMat  = new THREE.MeshStandardMaterial({ color: 0xe0d4bc, roughness: 0.9 });
+    const ocFrameMat = new THREE.MeshStandardMaterial({ color: 0x607d8b, roughness: 0.3, metalness: 0.5 });
+    const ocGlassMat = new THREE.MeshPhysicalMaterial({ color: 0xadd8e6, transparent: true, opacity: 0.35, roughness: 0.05, metalness: 0.1 });
+    const ocDeskMat  = new THREE.MeshStandardMaterial({ color: 0x8d6e63, roughness: 0.5 });
+    const ocAccentMats = [
+        new THREE.MeshStandardMaterial({ color: 0x1565c0, roughness: 0.7 }),
+        new THREE.MeshStandardMaterial({ color: 0x2e7d32, roughness: 0.7 }),
+        new THREE.MeshStandardMaterial({ color: 0x6a1b9a, roughness: 0.7 }),
+        new THREE.MeshStandardMaterial({ color: 0xe65100, roughness: 0.7 }),
+        new THREE.MeshStandardMaterial({ color: 0x00838f, roughness: 0.7 }),
+        new THREE.MeshStandardMaterial({ color: 0x4e342e, roughness: 0.7 }),
+    ];
+
+    function ocBx(w, h, d, mat) {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+        m.castShadow = true; m.receiveShadow = true;
+        return m;
+    }
+
+    function ocSign(label, bgHex) {
+        const cw = 256, ch = 64;
+        const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+        const c2 = cv.getContext('2d');
+        c2.fillStyle = bgHex || '#1a237e';
+        c2.fillRect(0, 0, cw, ch);
+        c2.fillStyle = '#ffffff';
+        c2.font = 'bold 20px sans-serif';
+        c2.textAlign = 'center'; c2.textBaseline = 'middle';
+        c2.fillText(label, cw / 2, ch / 2);
+        const m = new THREE.Mesh(
+            new THREE.PlaneGeometry(2.4, 0.6),
+            new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(cv), roughness: 0.5 })
+        );
+        return m;
+    }
+
+    function ocDesk(x, y, z, rot) {
+        const g = new THREE.Group();
+        const top = ocBx(1.6, 0.06, 0.8, ocDeskMat); top.position.y = 0.76;
+        const l1 = ocBx(0.06, 0.76, 0.06, ocDeskMat); l1.position.set(-0.75, 0.38, -0.36);
+        const l2 = ocBx(0.06, 0.76, 0.06, ocDeskMat); l2.position.set( 0.75, 0.38, -0.36);
+        const l3 = ocBx(0.06, 0.76, 0.06, ocDeskMat); l3.position.set(-0.75, 0.38,  0.36);
+        const l4 = ocBx(0.06, 0.76, 0.06, ocDeskMat); l4.position.set( 0.75, 0.38,  0.36);
+        g.add(top, l1, l2, l3, l4);
+        g.position.set(x, y, z);
+        if (rot) g.rotation.y = rot;
+        return g;
+    }
+
+    // ── 중정 바닥 ──────────────────────────────────────────
+    const cyW = 16, cyD = 10;
+    const courtFloor = ocBx(cyW, 0.12, cyD, ocCourtMat);
+    courtFloor.position.set(OCX, 0.06, OCZ);
+    scene.add(courtFloor);
+
+    for (let i = -7; i <= 7; i += 2) {
+        const tl = ocBx(0.05, 0.13, cyD, new THREE.MeshStandardMaterial({ color: 0xb0a488 }));
+        tl.position.set(OCX + i, 0.07, OCZ);
+        scene.add(tl);
+    }
+
+    function ocTree(x, z) {
+        const g = new THREE.Group();
+        const trunk = ocBx(0.18, 1.2, 0.18, new THREE.MeshStandardMaterial({ color: 0x795548 }));
+        trunk.position.y = 0.6;
+        const top1 = new THREE.Mesh(new THREE.SphereGeometry(0.7, 7, 6), new THREE.MeshStandardMaterial({ color: 0x388e3c, roughness: 0.9 }));
+        top1.position.y = 1.6; top1.castShadow = true;
+        const top2 = new THREE.Mesh(new THREE.SphereGeometry(0.5, 7, 6), new THREE.MeshStandardMaterial({ color: 0x43a047, roughness: 0.9 }));
+        top2.position.set(0.45, 1.9, 0.3); top2.castShadow = true;
+        g.add(trunk, top1, top2);
+        g.position.set(x, 0, z);
+        scene.add(g);
+    }
+    ocTree(OCX - 5, OCZ - 3);
+    ocTree(OCX + 5, OCZ - 3);
+    ocTree(OCX - 5, OCZ + 3);
+    ocTree(OCX + 5, OCZ + 3);
+
+    const fountain = new THREE.Group();
+    const fBase = ocBx(1.4, 0.25, 1.4, ocCourtMat); fBase.position.y = 0.125;
+    const fPool = ocBx(1.2, 0.18, 1.2, new THREE.MeshStandardMaterial({ color: 0x5c9adb, roughness: 0.1, metalness: 0.3 }));
+    fPool.position.y = 0.25;
+    const fPillar = ocBx(0.15, 0.6, 0.15, ocFrameMat); fPillar.position.y = 0.55;
+    fountain.add(fBase, fPool, fPillar);
+    fountain.position.set(OCX, 0, OCZ);
+    scene.add(fountain);
+
+    function ocBench(x, z, ry) {
+        const g = new THREE.Group();
+        const seat = ocBx(1.2, 0.08, 0.38, new THREE.MeshStandardMaterial({ color: 0xa1887f }));
+        seat.position.y = 0.46;
+        const back = ocBx(1.2, 0.5, 0.06, new THREE.MeshStandardMaterial({ color: 0xa1887f }));
+        back.position.set(0, 0.75, -0.16);
+        const bl1 = ocBx(0.06, 0.46, 0.38, ocFrameMat); bl1.position.set(-0.55, 0.23, 0);
+        const bl2 = ocBx(0.06, 0.46, 0.38, ocFrameMat); bl2.position.set( 0.55, 0.23, 0);
+        g.add(seat, back, bl1, bl2);
+        g.position.set(x, 0, z);
+        g.rotation.y = ry || 0;
+        scene.add(g);
+    }
+    ocBench(OCX - 6, OCZ, 0);
+    ocBench(OCX + 6, OCZ, Math.PI);
+    ocBench(OCX, OCZ - 3.5, Math.PI / 2);
+    ocBench(OCX, OCZ + 3.5, -Math.PI / 2);
+
+    // ── 방 생성 함수 ──────────────────────────────────────
+    function ocRoom(cx2, cz2, rw, rd, openDir, label, accentMat, deskList, isCEO) {
+        const g = new THREE.Group();
+        const hw = rw / 2, hd = rd / 2;
+        const wh = OCH, wy = wh / 2;
+
+        const floor = ocBx(rw, 0.12, rd, ocFloorMat); floor.position.y = 0.06; g.add(floor);
+        const roof  = ocBx(rw + OWT * 2, 0.2, rd + OWT * 2, ocRoofMat); roof.position.y = OCH + 0.1; g.add(roof);
+
+        function sw(w, h, d, px, py, pz) {
+            // 통유리 패널
+            const glass = ocBx(w, h, d, ocGlassMat);
+            glass.position.set(px, py, pz); g.add(glass);
+            // 상단 프레임 레일
+            const tw = Math.max(w, OWT) + 0.02, td = Math.max(d, OWT) + 0.02;
+            const rail = ocBx(tw, 0.07, td, ocFrameMat);
+            rail.position.set(px, h, pz); g.add(rail);
+            // 수직 멀리언 (2 m 간격)
+            const span = w > d ? w : d;
+            const cnt = Math.max(0, Math.floor(span / 2) - 1);
+            for (let i = 0; i < cnt; i++) {
+                const t = -span / 2 + (i + 1) * (span / (cnt + 1));
+                const mul = w > d
+                    ? ocBx(0.07, h, OWT + 0.02, ocFrameMat)
+                    : ocBx(OWT + 0.02, h, 0.07, ocFrameMat);
+                mul.position.set(px + (w > d ? t : 0), py, pz + (w > d ? 0 : t));
+                g.add(mul);
+            }
+        }
+        function aw(w, h, d, px, py, pz) {
+            // 통유리 + 액센트 상단 밴드 + 하단 베이스
+            const glass = ocBx(w, h, d, ocGlassMat);
+            glass.position.set(px, py, pz); g.add(glass);
+            const tw = w + 0.02, td = d + 0.02;
+            const band = ocBx(tw, 0.38, td, accentMat);
+            band.position.set(px, h - 0.19, pz); g.add(band);
+            const base = ocBx(tw, 0.16, td, accentMat);
+            base.position.set(px, 0.08, pz); g.add(base);
+            // 상단 레일
+            const rail = ocBx(tw, 0.07, td, ocFrameMat);
+            rail.position.set(px, h, pz); g.add(rail);
+        }
+        function doorWallZ(faceZ) {
+            sw((rw - DW) / 2, wh, OWT, -(DW / 2 + (rw - DW) / 4), wy, faceZ);
+            sw((rw - DW) / 2, wh, OWT,  (DW / 2 + (rw - DW) / 4), wy, faceZ);
+            sw(DW, wh - DH, OWT, 0, DH + (wh - DH) / 2, faceZ);
+            const gp1 = ocBx(0.06, DH, 0.3, ocGlassMat); gp1.position.set(-DW / 2 + 0.03, DH / 2, faceZ); g.add(gp1);
+            const gp2 = ocBx(0.06, DH, 0.3, ocGlassMat); gp2.position.set( DW / 2 - 0.03, DH / 2, faceZ); g.add(gp2);
+        }
+        function doorWallX(faceX) {
+            sw(OWT, wh, (rd - DW) / 2, faceX, wy, -(DW / 2 + (rd - DW) / 4));
+            sw(OWT, wh, (rd - DW) / 2, faceX, wy,  (DW / 2 + (rd - DW) / 4));
+            sw(OWT, wh - DH, DW, faceX, DH + (wh - DH) / 2, 0);
+            const gp1 = ocBx(0.3, DH, 0.06, ocGlassMat); gp1.position.set(faceX, DH / 2, -DW / 2 + 0.03); g.add(gp1);
+            const gp2 = ocBx(0.3, DH, 0.06, ocGlassMat); gp2.position.set(faceX, DH / 2,  DW / 2 - 0.03); g.add(gp2);
+        }
+
+        if (openDir === 'N') {
+            doorWallZ( hd);
+            aw(rw, wh, OWT, 0, wy, -hd);
+            sw(OWT, wh, rd, -hw, wy, 0);
+            sw(OWT, wh, rd,  hw, wy, 0);
+        } else if (openDir === 'S') {
+            doorWallZ(-hd);
+            aw(rw, wh, OWT, 0, wy,  hd);
+            sw(OWT, wh, rd, -hw, wy, 0);
+            sw(OWT, wh, rd,  hw, wy, 0);
+        } else if (openDir === 'W') {
+            doorWallX(-hw);
+            sw(OWT, wh, rd,  hw, wy, 0);
+            aw(rw, wh, OWT, 0, wy,  hd);
+            aw(rw, wh, OWT, 0, wy, -hd);
+        } else {
+            doorWallX( hw);
+            sw(OWT, wh, rd, -hw, wy, 0);
+            aw(rw, wh, OWT, 0, wy,  hd);
+            aw(rw, wh, OWT, 0, wy, -hd);
+        }
+
+        for (const [sx, sz] of [[-1,-1],[-1,1],[1,-1],[1,1]]) {
+            const col = ocBx(0.25, OCH, 0.25, ocFrameMat); col.position.set(sx * hw, OCH / 2, sz * hd); g.add(col);
+        }
+
+        const hexStr = '#' + accentMat.color.getHexString();
+        const sign = ocSign(label, hexStr);
+        if (openDir === 'S') { sign.position.set(0, DH + 0.45, -hd - 0.02); sign.rotation.y = Math.PI; }
+        else if (openDir === 'N') { sign.position.set(0, DH + 0.45,  hd + 0.02); }
+        else if (openDir === 'W') { sign.position.set(-hw - 0.02, DH + 0.45, 0); sign.rotation.y = -Math.PI / 2; }
+        else                      { sign.position.set( hw + 0.02, DH + 0.45, 0); sign.rotation.y =  Math.PI / 2; }
+        g.add(sign);
+
+        if (deskList) { for (const [dx, dz, dr] of deskList) g.add(ocDesk(dx, 0, dz, dr)); }
+
+        if (isCEO) {
+            const carpet = ocBx(rw - 0.6, 0.02, rd - 0.6, new THREE.MeshStandardMaterial({ color: 0x7b1fa2, roughness: 0.98 }));
+            carpet.position.y = 0.13; g.add(carpet);
+            const bigDesk = ocBx(2.4, 0.08, 1.0, ocDeskMat); bigDesk.position.set(0, 0.82, -hd + 2.2); g.add(bigDesk);
+            const sofa = ocBx(2.2, 0.5, 0.7, new THREE.MeshStandardMaterial({ color: 0x37474f }));
+            sofa.position.set(0, 0.25, hd - 1.8); g.add(sofa);
+            const ct = ocBx(0.8, 0.06, 0.5, ocDeskMat); ct.position.set(0, 0.38, hd - 2.5); g.add(ct);
+        }
+
+        g.position.set(cx2, 0, cz2);
+        scene.add(g);
+        return g;
+    }
+
+    // ── 6개 방 배치 ──────────────────────────────────────
+    ocRoom(-39, -33.5, 8, 7, 'S', '솔루션 개발 1팀', ocAccentMats[0], [
+        [-2.5, -0.8, 0], [0, -0.8, 0], [2.5, -0.8, 0],
+        [-2.5,  1.5, Math.PI], [0,  1.5, Math.PI],
+    ]);
+    ocRoom(-31, -33.5, 8, 7, 'S', '솔루션 개발 2팀', ocAccentMats[1], [
+        [-2.5, -0.8, 0], [0, -0.8, 0], [2.5, -0.8, 0],
+        [-2.5,  1.5, Math.PI], [0,  1.5, Math.PI],
+    ]);
+    ocRoom(-48, -25, 10, 10, 'E', '대표님 사무실', ocAccentMats[2], [], true);
+    ocRoom(-22, -25, 10, 10, 'W', '시스템 운영팀', ocAccentMats[3], [
+        [-2.0, -2.5, 0], [0, -2.5, 0], [2.0, -2.5, 0],
+        [-2.0,  0.0, 0], [0,  0.0, 0], [2.0,  0.0, 0],
+        [-2.0,  2.5, 0], [0,  2.5, 0],
+    ]);
+    ocRoom(-39, -16.5, 8, 7, 'N', '인프라팀', ocAccentMats[4], [
+        [-2.5,  0.8, Math.PI], [0,  0.8, Math.PI], [2.5,  0.8, Math.PI],
+        [-2.5, -1.5, 0], [0, -1.5, 0],
+    ]);
+    ocRoom(-31, -16.5, 8, 7, 'N', '창고', ocAccentMats[5], [[0, 0.5, 0]]);
+
+    // ── 중정 입구 게이트 ─────────────────────────────────
+    const gateL = ocBx(0.3, OCH + 0.4, 0.3, ocFrameMat); gateL.position.set(OCX - 1.8, (OCH + 0.4) / 2, OCZ + cyD / 2 + 0.15); scene.add(gateL);
+    const gateR = ocBx(0.3, OCH + 0.4, 0.3, ocFrameMat); gateR.position.set(OCX + 1.8, (OCH + 0.4) / 2, OCZ + cyD / 2 + 0.15); scene.add(gateR);
+    const gateBeam = ocBx(3.6, 0.22, 0.22, ocFrameMat); gateBeam.position.set(OCX, OCH + 0.4, OCZ + cyD / 2 + 0.15); scene.add(gateBeam);
+    const gateSign = ocSign('OFFICE COMPLEX', '#1a237e');
+    gateSign.position.set(OCX, OCH + 0.1, OCZ + cyD / 2 + 0.28);
+    scene.add(gateSign);
+
+    // ── 남쪽 진입로 ──────────────────────────────────────
+    const southPath = ocBx(3.6, 0.1, 8, ocPathMat);
+    southPath.position.set(OCX, 0.05, OCZ + cyD / 2 + 4);
+    scene.add(southPath);
+
+    // ── 동물 순찰 웨이포인트 추가 ───────────────────────
+    ANIMAL_PATROL_WPS.push(
+        { x: -35, z: -25 },
+        { x: -39, z: -31 },
+        { x: -31, z: -31 },
+        { x: -44, z: -25 },
+        { x: -26, z: -25 },
+        { x: -39, z: -19 },
+        { x: -31, z: -19 },
+    );
+}
+
+// 부서 → 3D 룸 좌표 매핑 (createPersonAvatar에서 참조)
+const DEPT_ROOMS = {
+    '솔루션 개발 1팀': { x: -39, z: -33.5 },
+    '솔루션 개발 2팀': { x: -31, z: -33.5 },
+    '대표님 사무실':   { x: -48, z: -25   },
+    '시스템 운영팀':   { x: -22, z: -25   },
+    '인프라팀':        { x: -39, z: -16.5 },
+    '창고':            { x: -31, z: -16.5 },
+};
+
 // P6: 리조트 회의 테이블 좌석 — makeMeetingTable seatR = radius + 0.8 공식과 일치.
 // Boracay(cx=16,cz=18,seats=5,seatR=1.8), Guam(cx=1,cz=10,seats=6,seatR=1.8), Okinawa(cx=16,cz=5,seats=4,seatR=1.7)
 function _resortSeats(cx, cz, count, seatR) {
@@ -3786,18 +4306,27 @@ function isWatermelon(person) {
         || e.startsWith('102450@ctr') || n.includes('김두환') || n.includes('doohwan');
 }
 
+// 특정 사용자 → 부리부리몬(돼지) 캐릭터 (요청: 김수비).
+function isBuriburimon(person) {
+    const e = (person.email || '').toLowerCase().trim();
+    const n = (person.name || '').toLowerCase().trim();
+    return e.startsWith('106079@ctr') || e.includes('subi.kim') || n.includes('김수비') || n.includes('subi kim');
+}
+
 function createPersonAvatar(person) {
     const color = parseInt((person.color || '#4A90E2').replace('#', ''), 16);
 
     // 상세 캐릭터 모델 — person.id 해시로 외형(피부·머리색·헤어스타일·성별)을 결정적 다양화.
     // 같은 id 는 항상 같은 외형 → 새로고침·재접속에도 일관. 셔츠색만 person.color 반영(바지·신발 고정).
-    // 특별 캐릭터: ZEPHONI(=ADK)='i' 문자 / 102450@CTR.CO.KR=검은수박 / 나머지=상세 휴먼.
+    // 특별 캐릭터: ZEPHONI='i' 문자 / 102450@CTR.CO.KR=검은수박 / 김수비=부리부리몬 / 나머지=상세 휴먼.
     const isZephoni = (person.name || '').trim().toUpperCase() === 'ZEPHONI';
     const personObj = isZephoni
         ? createICharacter(color)
         : isWatermelon(person)
             ? createWatermelonCharacter()
-            : createDetailedPerson(traitsFromSeed(person.id, color));
+            : isBuriburimon(person)
+                ? createBuriburimonCharacter()
+                : createDetailedPerson(traitsFromSeed(person.id, color));
     const group = personObj.group;
     group.scale.set(0.9, 0.9, 0.9);   // 계단 에이전트와 동일 스케일
 
@@ -3819,13 +4348,17 @@ function createPersonAvatar(person) {
     badge.visible = false;
     group.add(badge);
 
-    // person.position이 있으면 3D 씬 위치 반영, 없으면 격자 기본 배치
-    if (person.position && (person.position.x !== undefined) && (person.position.y !== undefined)) {
-        // 2D 캔버스 좌표(px) → 3D 씬 좌표 변환: 2D y → 3D z (공유 규약)
+    // 부서 배치 우선 → person.position 변환 → 격자 기본 배치
+    if (person.department && DEPT_ROOMS[person.department]) {
+        const rm = DEPT_ROOMS[person.department];
+        let seatIdx = 0;
+        personAvatarMap.forEach(av => { if (av.department === person.department) seatIdx++; });
+        const col = seatIdx % 3, row = Math.floor(seatIdx / 3);
+        group.position.set(rm.x + col * 2.0 - 2.0, PERSON_GROUND_Y, rm.z + row * 2.0 - 1.0);
+    } else if (person.position && (person.position.x !== undefined) && (person.position.y !== undefined)) {
         const s = personPosToScene(person.position);
         group.position.set(s.x, PERSON_GROUND_Y, s.z);
     } else {
-        // 기본 격자 배치 — 오피스 앞 공간 (x=-5~5, z=6~10)
         const idx = personAvatarMap.size;
         const targetX = -4 + (idx % 5) * 2;
         const targetZ = 7 + Math.floor(idx / 5) * 2;
@@ -3837,9 +4370,21 @@ function createPersonAvatar(person) {
     // HTML 레이블
     const labelEl = makePersonLabel(person.name, person.color || '#4A90E2');
 
+    // P3: WS 세션 신분 가시성 매칭용 이메일 키(소문자 정규화)
+    const _emailKey = (person.email || '').toLowerCase();
+
     personAvatarMap.set(person.id, { group, personObj, pickMeshes, badge, labelEl, bubbleEl: null, unreadCount: 0,
         meetingEl: null, preMeetingPos: null, meetingSeatIdx: -1, meetingJoinUrl: null,
-        displayName: person.name, shirtColorHex: person.color || '#4A90E2' });
+        displayName: person.name, shirtColorHex: person.color || '#4A90E2',
+        department: person.department || null, email: _emailKey });
+
+    // P3: 세션 추적이 이미 시작된 상태(current-users 수신 후)라면, 신규 아바타 생성 시점에도
+    // 온라인 여부를 즉시 반영한다(사람 아바타 생성 → user-joined 브로드캐스트 순서가 뒤바뀌는 경합 방지).
+    if (_sessionTrackingActive) {
+        const _isOnline = onlineEmails.has(_emailKey);
+        group.visible = _isOnline;
+        if (labelEl) labelEl.style.display = _isOnline ? '' : 'none';
+    }
 }
 
 /**
@@ -3884,9 +4429,11 @@ function syncPersonAvatars(people) {
             createPersonAvatar(person);
             continue;
         }
-        // 위치 갱신 (드래그 중이 아니면)
-        if (person.position && (person.position.x !== undefined) && (person.position.y !== undefined)) {
-            if (av !== draggingAvatar) {
+        // 위치 갱신 (드래그 중·키보드 이동 중·부서 배치 중이 아니면)
+        if (person.position && (person.position.x !== undefined) && (person.position.y !== undefined)
+            && !person.department) {
+            const isMovingByKey = person.id === myPersonId && keysDown.size > 0;
+            if (av !== draggingAvatar && !isMovingByKey) {
                 const s = personPosToScene(person.position);
                 // y(층 높이)는 보존 — 엘리베이터로 상층에 올라간 아바타가 people-update로 1층으로 떨어지지 않게.
                 av.group.position.set(s.x, av.group.position.y, s.z);
@@ -4346,6 +4893,19 @@ function updatePersonLabels() {
         if (ev.button !== 0) return; // 좌클릭만
         toNdc(ev);
         raycaster.setFromCamera(ndc, camera);
+
+        // 동물 클릭 우선 확인 (재롱 트리거)
+        const animalMeshes = [...dogState.pickMeshes, ...catState.pickMeshes];
+        if (animalMeshes.length > 0) {
+            const animalHits = raycaster.intersectObjects(animalMeshes);
+            if (animalHits.length > 0) {
+                const anType = animalHits[0].object.userData.animalType;
+                if (anType === 'dog' && dogState.state !== 'trick') { dogState.state = 'trick'; dogState.trickT = 0; }
+                else if (anType === 'cat' && catState.state !== 'trick') { catState.state = 'trick'; catState.trickT = 0; }
+                return;
+            }
+        }
+
         const mesh = pickAvatarMesh();
         if (!mesh) return;
         const id = mesh.userData.personId;
@@ -4826,10 +5386,21 @@ function focusAvatar(personId) {
     controls.update();
 }
 
+// P3: WS 세션 신분 모델 — 모듈 변수
+let _ws = null;                      // 현재 WS 인스턴스(재접속 시 재등록에 사용)
+const onlineEmails = new Set();      // 현재 세션에 접속 중인 사용자 이메일(소문자) 집합
+let _sessionTrackingActive = false;  // current-users 최초 수신 후 true(그 전까지는 하위호환으로 전원 표시)
+
 function connectWS() {
-    const ws = new WebSocket(`ws://${location.hostname}:3300`);
-    ws.onopen = () => { document.getElementById('conn-status').textContent = 'Connected'; document.getElementById('conn-status').style.color = '#0f0'; };
-    ws.onmessage = (e) => {
+    _ws = new WebSocket(`ws://${location.hostname}:3300`);
+    _ws.onopen = () => {
+        document.getElementById('conn-status').textContent = 'Connected';
+        document.getElementById('conn-status').style.color = '#0f0';
+        // P3: 재접속 시에도(로그인 상태 유지 중이면) 즉시 세션 신분 재등록
+        const acct = getAccount();
+        if (acct) _sendUserJoin(acct);
+    };
+    _ws.onmessage = (e) => {
         const d = JSON.parse(e.data);
         if (d.type === 'init') {
             Object.entries(d.agents).forEach(([r, s]) => {
@@ -4866,6 +5437,7 @@ function connectWS() {
                     d.subject ? `회의: ${d.subject}` : '화상회의가 시작되었습니다.',
                     { tag: `meeting-${d.personId || 'x'}`, onClick: () => focusAvatar(d.personId) });
             }
+<<<<<<< Updated upstream
         } else if (d.type === 'order-reminder') {
             // ORDER-01: 월 09:00 — 음료 고르기 알림(클릭 시 메뉴 오픈)
             notify('system', '텐퍼센트 커피 주문', '오늘 마실 음료를 골라 주문에 담아주세요! (마감 09:18)',
@@ -4877,11 +5449,73 @@ function connectWS() {
         } else if (d.type === 'order-cleared') {
             // ORDER-01: 월 10:00 — 주문 목록 clear
             if (window.__clearOrders) window.__clearOrders();
+=======
+        } else if (d.type === 'current-users') {
+            // P3: 세션 추적 시작 — 현재 온라인 사용자 목록으로 전체 아바타 가시성 초기화
+            _sessionTrackingActive = true;
+            onlineEmails.clear();
+            (d.users || []).forEach(u => { if (u.email) onlineEmails.add(u.email.toLowerCase()); });
+            _applySessionVisibilityAll();
+        } else if (d.type === 'user-joined') {
+            // P3: 신규 사용자 접속 — 해당 이메일 아바타만 표시
+            if (d.user && d.user.email) {
+                onlineEmails.add(d.user.email.toLowerCase());
+                _applySessionVisibilityForEmail(d.user.email);
+            }
+        } else if (d.type === 'user-left') {
+            // P3: 사용자 퇴장 — 해당 이메일 아바타 비가시(people.json 삭제 아님)
+            if (d.email) {
+                onlineEmails.delete(d.email.toLowerCase());
+                _applySessionVisibilityForEmail(d.email);
+            }
+>>>>>>> Stashed changes
         }
     };
-    ws.onclose = () => { document.getElementById('conn-status').textContent = 'Reconnecting...'; document.getElementById('conn-status').style.color = '#f00'; setTimeout(connectWS, 3000); };
+    _ws.onclose = () => { document.getElementById('conn-status').textContent = 'Reconnecting...'; document.getElementById('conn-status').style.color = '#f00'; setTimeout(connectWS, 3000); };
 }
 connectWS();
+
+// ---- P3 세션 신분 헬퍼 ----
+
+/**
+ * 본인 MSAL 프로필로 서버에 세션 신분을 등록한다.
+ * 보안: oid/email/displayName/color만 전송 — access token은 절대 포함하지 않는다(신분 격리 원칙).
+ */
+function _sendUserJoin(account) {
+    if (!_ws || _ws.readyState !== 1) return;
+    _ws.send(JSON.stringify({
+        type: 'user-join',
+        profile: {
+            oid: account.localAccountId || account.homeAccountId || account.username,
+            displayName: account.name || account.username || '',
+            email: (account.username || '').toLowerCase(),
+            color: '#00B7C3',
+        },
+    }));
+}
+
+/** 특정 이메일의 아바타만 현재 onlineEmails 상태에 맞춰 가시성 갱신. */
+function _applySessionVisibilityForEmail(email) {
+    if (!_sessionTrackingActive || !email) return;
+    const lEmail = email.toLowerCase();
+    const isOnline = onlineEmails.has(lEmail);
+    for (const [, av] of personAvatarMap) {
+        if ((av.email || '') === lEmail) {
+            av.group.visible = isOnline;
+            if (av.labelEl) av.labelEl.style.display = isOnline ? '' : 'none';
+        }
+    }
+}
+
+/** 전체 아바타를 현재 onlineEmails 상태에 맞춰 일괄 가시성 갱신(current-users 수신 시). */
+function _applySessionVisibilityAll() {
+    if (!_sessionTrackingActive) return;
+    for (const [, av] of personAvatarMap) {
+        const isOnline = onlineEmails.has(av.email || '');
+        av.group.visible = isOnline;
+        if (av.labelEl) av.labelEl.style.display = isOnline ? '' : 'none';
+    }
+}
 
 // ---- 인앱 Teams 채팅 UI 초기화 (CHAT-01) ----
 initChatPanel({ apiBase: `http://${location.hostname}:3300` });
@@ -4898,14 +5532,20 @@ async function ensureSelfAvatar(account) {
         if (!email) return;
         const base = `http://${location.hostname}:3300`;
         const people = await fetch(`${base}/api/people`).then((r) => r.json()).catch(() => []);
-        const exists = Array.isArray(people) && people.some((p) => (p.email || '').toLowerCase() === email.toLowerCase());
-        if (exists) return;
-        await fetch(`${base}/api/people`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, email, color: '#00B7C3' }),
-        });
-        // people-update 브로드캐스트로 아바타가 자동 표시됨
+        const existing = Array.isArray(people) && people.find((p) => (p.email || '').toLowerCase() === email.toLowerCase());
+        if (existing) {
+            myPersonId = existing.id; // 이미 등록된 경우 ID 세팅
+        } else {
+            const created = await fetch(`${base}/api/people`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, email, color: '#00B7C3' }),
+            }).then((r) => r.json()).catch(() => null);
+            if (created && created.id) myPersonId = created.id; // 신규 등록 후 ID 세팅
+            // people-update 브로드캐스트로 아바타가 자동 표시됨
+        }
     } catch { /* noop */ }
+    // P3: people.json 등록 완료 후 WS 세션 신분 등록(본인 접속 사실을 전원에게 broadcast).
+    _sendUserJoin(account);
 }
 initAuthGate({ onAuthenticated: (account) => { ensureSelfAvatar(account); if (window.__renderOrders) window.__renderOrders(); } });
 
@@ -4948,10 +5588,18 @@ window.__applyWeather = applyWeather;
 window.__forceDayPhase = null; // 0..1 설정시 시간 고정
 
 window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+const MOVE_KEYS = new Set(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
+
 window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {
         e.preventDefault();
         fetch('http://localhost:3300/demo', { method: 'POST' }).catch(() => {});
+        return;
+    }
+    // 이동 키 — 텍스트 입력 중에는 무시
+    if (MOVE_KEYS.has(e.code) && !_isTyping()) {
+        e.preventDefault(); // 화살표 키의 페이지 스크롤 방지
+        keysDown.add(e.code);
         return;
     }
     // 프리셋 뷰 (1~5)
@@ -4965,3 +5613,14 @@ window.addEventListener('keydown', (e) => {
     // G 키로 점심 게임 수동 실행
     if (e.code === 'KeyG') triggerLunchGame();
 });
+
+window.addEventListener('keyup', (e) => {
+    if (MOVE_KEYS.has(e.code)) {
+        keysDown.delete(e.code);
+        // 마지막 이동 키를 뗄 때 즉시 서버 저장
+        if (keysDown.size === 0) _saveMyPosition();
+    }
+});
+
+// 포커스 잃을 때 이동 키 초기화 (Alt+Tab 등으로 전환 시 키 stuck 방지)
+window.addEventListener('blur', () => { keysDown.clear(); });

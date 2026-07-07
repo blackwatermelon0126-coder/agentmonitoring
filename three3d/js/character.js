@@ -169,6 +169,7 @@ export function createWatermelonCharacter() {
         g.add(hand);
         g.position.set(side * (R - 0.02), 1.52, 0);
         g.rotation.z = side * 0.22;
+        g.userData.walkLimbType = side < 0 ? 'armL' : 'armR';
         g.traverse(o => { if (o.isMesh) o.castShadow = true; });
         return g;
     }
@@ -185,11 +186,146 @@ export function createWatermelonCharacter() {
         foot.position.y = 0.04;
         g.add(foot);
         g.position.set(x, 0, 0);
+        g.userData.walkLimbType = x < 0 ? 'legL' : 'legR';
         g.traverse(o => { if (o.isMesh) o.castShadow = true; });
         return g;
     }
     group.add(leg(-0.15));
     group.add(leg(0.15));
+
+    return { group };
+}
+
+/**
+ * "부리부리몬" 돼지 캐릭터 (특정 사용자 전용 — 김수비).
+ * 큰 둥근 머리 + 두꺼운 화난 눈썹 + 돼지 코(납작 원기둥) + 통통한 몸 + 보라색 바지.
+ * createDetailedPerson 과 동일하게 { group } 을 반환한다.
+ *
+ * @returns {{ group: THREE.Group }}
+ */
+export function createBuriburimonCharacter() {
+    const group = new THREE.Group();
+
+    const SKIN  = 0xF5C3A0;  // 살구색 피부
+    const PANTS = 0x7856C8;  // 보라색 바지
+    const SNOUT = 0xEFAA88;  // 코(약간 진한 살구)
+    const BROW  = 0x1A0E04;  // 눈썹(짙은 갈흑)
+
+    const skinMat  = new THREE.MeshStandardMaterial({ color: SKIN,    roughness: 0.55 });
+    const pantsMat = new THREE.MeshStandardMaterial({ color: PANTS,   roughness: 0.5  });
+    const snoutMat = new THREE.MeshStandardMaterial({ color: SNOUT,   roughness: 0.5  });
+    const earMat   = new THREE.MeshStandardMaterial({ color: 0xEFAA88, roughness: 0.6 });
+    const whiteMat = new THREE.MeshStandardMaterial({ color: 0xfafafa });
+    const blackMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
+    const browMat  = new THREE.MeshBasicMaterial({ color: BROW });
+    const holeMat  = new THREE.MeshBasicMaterial({ color: 0x3A1A08 });
+
+    // 전체 높이 ≈ 1.8 (일반 아바타와 동일 기준)
+    const HEAD_R = 0.36;
+    const BODY_R = 0.28;
+    const HEAD_Y = 1.44;
+    const BODY_Y = 0.82;
+
+    // ── 몸통 (통통한 타원구, 살구색) ──
+    const body = new THREE.Mesh(new THREE.SphereGeometry(BODY_R, 22, 16), skinMat);
+    body.scale.y = 1.18;
+    body.position.y = BODY_Y;
+    body.castShadow = true;
+    group.add(body);
+
+    // ── 바지 허리띠 (보라색 원기둥 링) ──
+    const waist = new THREE.Mesh(new THREE.CylinderGeometry(BODY_R + 0.02, BODY_R + 0.02, 0.08, 18), pantsMat);
+    waist.position.y = BODY_Y - 0.14;
+    waist.castShadow = true;
+    group.add(waist);
+
+    // ── 머리 (큰 구) ──
+    const head = new THREE.Mesh(new THREE.SphereGeometry(HEAD_R, 26, 20), skinMat);
+    head.position.y = HEAD_Y;
+    head.castShadow = true;
+    group.add(head);
+
+    // ── 귀 (납작한 타원구, 머리 위 양쪽) ──
+    [-1, 1].forEach(side => {
+        const e = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 8), earMat);
+        e.scale.set(0.75, 0.85, 0.5);
+        e.position.set(side * HEAD_R * 0.8, HEAD_Y + HEAD_R * 0.55, HEAD_R * 0.25);
+        e.castShadow = true;
+        group.add(e);
+    });
+
+    // ── 눈썹 (두껍고 화난 각도 — 안쪽이 내려가는 V형) ──
+    // rotation.z = side * 0.5: 안쪽 끝이 아래로 → 화난 표정
+    const browGeo = new THREE.BoxGeometry(0.14, 0.044, 0.03);
+    [-1, 1].forEach(side => {
+        const brow = new THREE.Mesh(browGeo, browMat);
+        brow.position.set(side * 0.115, HEAD_Y + 0.145, HEAD_R * 0.92);
+        brow.rotation.z = side * 0.5;
+        group.add(brow);
+    });
+
+    // ── 눈 (큰 흰자 + 검은 동공) ──
+    [-1, 1].forEach(side => {
+        const g = new THREE.Group();
+        const white = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 10), whiteMat);
+        const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.042, 10, 8), blackMat);
+        pupil.position.z = 0.058;
+        g.add(white); g.add(pupil);
+        g.position.set(side * 0.135, HEAD_Y + 0.05, HEAD_R * 0.92);
+        group.add(g);
+    });
+
+    // ── 돼지 코 (납작한 원기둥, 앞으로 돌출) ──
+    const snoutMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.105, 0.105, 0.04, 18), snoutMat);
+    snoutMesh.rotation.x = Math.PI / 2;
+    snoutMesh.position.set(0, HEAD_Y - 0.1, HEAD_R * 0.88);
+    snoutMesh.castShadow = true;
+    group.add(snoutMesh);
+    // 콧구멍 (어두운 원형)
+    [0.048, -0.048].forEach(x => {
+        const n = new THREE.Mesh(new THREE.CircleGeometry(0.03, 12), holeMat);
+        n.position.set(x, HEAD_Y - 0.1, HEAD_R * 0.88 + 0.022);
+        group.add(n);
+    });
+
+    // ── 팔 (짧고 통통, 어깨 구로 몸통과 자연스럽게 이음) ──
+    [-1, 1].forEach(side => {
+        // 어깨 구: 몸통 표면에 겹쳐서 팔 원기둥 시작 단절을 메꿈
+        const shoulder = new THREE.Mesh(new THREE.SphereGeometry(0.1, 14, 10), skinMat);
+        shoulder.position.set(side * (BODY_R + 0.02), BODY_Y + 0.08, 0);
+        shoulder.castShadow = true;
+        group.add(shoulder);
+
+        const g = new THREE.Group();
+        const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.075, 0.32, 12), skinMat);
+        upper.position.y = -0.16;
+        g.add(upper);
+        const hand = new THREE.Mesh(new THREE.SphereGeometry(0.09, 12, 8), skinMat);
+        hand.position.y = -0.36;
+        g.add(hand);
+        // 팔 그룹 원점을 어깨 구와 동일 위치에 놓아 구가 이음새를 덮음
+        g.position.set(side * (BODY_R + 0.02), BODY_Y + 0.08, 0);
+        g.rotation.z = side * 0.3;
+        g.userData.walkLimbType = side < 0 ? 'armL' : 'armR';
+        g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        group.add(g);
+    });
+
+    // ── 다리 (짧고 통통, 보라색 바지) ──
+    [-0.13, 0.13].forEach(x => {
+        const g = new THREE.Group();
+        const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.09, 0.42, 12), pantsMat);
+        thigh.position.y = 0.21;
+        g.add(thigh);
+        const foot = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 8), skinMat);
+        foot.scale.z = 1.3;
+        foot.position.y = 0.02;
+        g.add(foot);
+        g.position.set(x, BODY_Y - BODY_R * 1.18, 0);
+        g.userData.walkLimbType = x < 0 ? 'legL' : 'legR';
+        g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        group.add(g);
+    });
 
     return { group };
 }

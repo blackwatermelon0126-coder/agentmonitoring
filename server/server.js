@@ -57,6 +57,9 @@ const wss = new WebSocketServer({ server });
 // 연결된 클라이언트 목록
 const clients = new Set();
 
+// P3: WS 세션 신분 추적 — ws → { oid, email, displayName, color }
+const wsUserMap = new Map();
+
 // 최근 활동 로그 (카드뷰 피드용, 최대 50개)
 // 서버 시작 시 파일에서 최근 50건을 복원한다 (결함 D11 수정)
 const ACTIVITY_LIMIT = _ACTIVITY_LIMIT;
@@ -136,9 +139,43 @@ wss.on('connection', (ws) => {
         activity: activityLog
     }));
 
+    // P3: 현재 세션 접속 사용자 목록 전송 (신규 접속자가 기존 온라인 사용자를 즉시 인지)
+    ws.send(JSON.stringify({ type: 'current-users', users: [...wsUserMap.values()] }));
+
+    // P3: 클라이언트 → 서버 user-join 수신 (본인 MSAL 프로필로 세션 신분 등록)
+    // 보안: profile에는 oid/email/displayName/color만 포함 — access token은 절대 전달·저장하지 않는다(신분 격리).
+    ws.on('message', (raw) => {
+        try {
+            const msg = JSON.parse(raw);
+            if (msg.type === 'user-join' && msg.profile && msg.profile.oid) {
+                const user = {
+                    oid: msg.profile.oid,
+                    email: (msg.profile.email || '').toLowerCase(),
+                    displayName: msg.profile.displayName || '',
+                    color: msg.profile.color || '#00B7C3',
+                };
+                wsUserMap.set(ws, user);
+                const out = JSON.stringify({ type: 'user-joined', user });
+                wss.clients.forEach(c => { if (c.readyState === 1) c.send(out); });
+                logger.info({ event: 'user_join', oid: user.oid, displayName: user.displayName }, 'User joined session');
+            }
+        } catch (e) {
+            logger.warn({ event: 'ws_message_parse_error', err: e.message }, 'WS message parse error');
+        }
+    });
+
     ws.on('close', () => {
+        // P3: 세션 신분 등록된 사용자였다면 전원에게 퇴장 브로드캐스트
+        const sessionUser = wsUserMap.get(ws);
+        wsUserMap.delete(ws);
         clients.delete(ws);
-        logger.info({ event: 'ws_disconnect', clientCount: wss.clients.size }, 'WS client disconnected');
+        if (sessionUser) {
+            const out = JSON.stringify({ type: 'user-left', oid: sessionUser.oid, email: sessionUser.email });
+            wss.clients.forEach(c => { if (c.readyState === 1) c.send(out); });
+            logger.info({ event: 'user_left', oid: sessionUser.oid, displayName: sessionUser.displayName }, 'User left session');
+        } else {
+            logger.info({ event: 'ws_disconnect', clientCount: wss.clients.size }, 'WS client disconnected');
+        }
     });
 });
 
@@ -761,4 +798,4 @@ if (process.argv[1] === __filename) {
     });
 }
 
-export { app, server, agentStates, sessions, DEFAULT_SESSION, createSessionRoles, activityLog, toolToAction, inferRole, pushActivity, ACTIVITY_LIMIT, eventCount, lastEventAt, requireLoopback, SERVER_START, LOOPBACK_ADDRS, people, broadcastPeople };
+export { app, server, agentStates, sessions, DEFAULT_SESSION, createSessionRoles, activityLog, toolToAction, inferRole, pushActivity, ACTIVITY_LIMIT, eventCount, lastEventAt, requireLoopback, SERVER_START, LOOPBACK_ADDRS, people, broadcastPeople, wsUserMap };

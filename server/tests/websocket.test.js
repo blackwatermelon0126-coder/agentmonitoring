@@ -185,6 +185,7 @@ describe('agent-update 브로드캐스트', () => {
     it('/hook/tool-use POST 후 type=agent-update 메시지 수신', async () => {
         const client = await createWsClient(wsUrl);
         await client.nextMsg(); // init 소비
+        await client.nextMsg(); // current-users 소비 (P3: WS 세션 신분)
 
         await httpPost(serverPort, '/hook/tool-use', {
             tool: 'Read', role: 'developer', status: 'working'
@@ -199,6 +200,7 @@ describe('agent-update 브로드캐스트', () => {
     it('agent-update 메시지에 agent, state, activity 필드 포함', async () => {
         const client = await createWsClient(wsUrl);
         await client.nextMsg(); // init 소비
+        await client.nextMsg(); // current-users 소비 (P3: WS 세션 신분)
 
         await httpPost(serverPort, '/hook/tool-use', {
             tool: 'Edit', role: 'developer', status: 'working', detail: '테스트 상세'
@@ -215,6 +217,7 @@ describe('agent-update 브로드캐스트', () => {
     it('agent-update.agent는 POST body의 role 값과 일치', async () => {
         const client = await createWsClient(wsUrl);
         await client.nextMsg(); // init 소비
+        await client.nextMsg(); // current-users 소비 (P3: WS 세션 신분)
 
         await httpPost(serverPort, '/hook/tool-use', {
             tool: 'Bash', role: 'devops', status: 'working'
@@ -229,6 +232,7 @@ describe('agent-update 브로드캐스트', () => {
     it('agent-update.state.action이 도구 매핑과 일치 (Grep → searching)', async () => {
         const client = await createWsClient(wsUrl);
         await client.nextMsg(); // init 소비
+        await client.nextMsg(); // current-users 소비 (P3: WS 세션 신분)
 
         await httpPost(serverPort, '/hook/tool-use', {
             tool: 'Grep', role: 'qa', status: 'working'
@@ -254,6 +258,9 @@ describe('멀티 클라이언트 브로드캐스트', () => {
         // 양쪽 init 소비
         await c1.nextMsg();
         await c2.nextMsg();
+        // 양쪽 current-users 소비 (P3: WS 세션 신분)
+        await c1.nextMsg();
+        await c2.nextMsg();
 
         // 두 클라이언트가 동시에 다음 메시지를 대기하면서 POST 발행
         const [msg1, msg2] = await Promise.all([
@@ -276,6 +283,9 @@ describe('멀티 클라이언트 브로드캐스트', () => {
             createWsClient(wsUrl)
         ]);
 
+        await c1.nextMsg();
+        await c2.nextMsg();
+        // 양쪽 current-users 소비 (P3: WS 세션 신분)
         await c1.nextMsg();
         await c2.nextMsg();
 
