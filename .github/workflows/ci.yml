@@ -58,4 +58,4 @@ jobs:
         run: |
           sleep 10
           docker compose -f docker-compose.prod.yml ps
-          wget -qO- http://localhost:3300/api/status
+          docker exec metaoffice-app wget -qO- http://127.0.0.1:3300/api/status
