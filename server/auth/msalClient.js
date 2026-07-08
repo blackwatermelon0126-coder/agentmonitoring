@@ -75,6 +75,11 @@ const SCOPES = [
     'User.Read.All',        // 조직 사용자 피커용
 ];
 
+// MEALPLAN-01: SharePoint 식단표(.pptx) 썸네일 읽기용 스코프.
+// 핵심 SCOPES 와 '분리'해 둔다 — 미동의 상태에서도 채팅 로그인·토큰 갱신이 깨지지 않게 하기 위함.
+// 테넌트 관리자 동의(Files.Read.All 위임)만 완료되면 재로그인 없이 silent 로 발급된다.
+const FILE_SCOPES = ['Files.Read.All'];
+
 // ── 토큰 파일 입출력 ──────────────────────────────────────────────
 
 /**
@@ -190,6 +195,26 @@ async function refreshTokenIfNeeded() {
  * 가능하면 authenticated:true 로 보고한다(서버 재시작 직후에도 로그인 유지).
  * @returns {Promise<{ authenticated: boolean, account: string|null }>}
  */
+/**
+ * MEALPLAN-01: SharePoint 파일 읽기용 access token(Files.Read.All)을 silent 로 시도한다.
+ * 핵심 로그인 SCOPES 와 분리돼 있어, 여기서 실패해도 채팅 토큰(refreshTokenIfNeeded)에는 영향이 없다.
+ *   - 테넌트 관리자 동의가 완료돼 있으면: 재로그인 없이 silent 로 발급된다.
+ *   - 미동의/미인증 상태면: 조용히 null 을 반환한다(식단표는 폴백 캐시 사용).
+ * @returns {Promise<string|null>} accessToken 또는 null
+ */
+async function getFileToken() {
+    try {
+        const accounts = await pca.getTokenCache().getAllAccounts();
+        const cached = getTokenFromCache();
+        const account = accounts.find(a => a.username === cached?.account?.username) || accounts[0];
+        if (!account) return null;
+        const resp = await pca.acquireTokenSilent({ scopes: FILE_SCOPES, account });
+        return resp ? resp.accessToken : null;
+    } catch {
+        return null;   // 미동의(consent_required)/미인증 — 폴백
+    }
+}
+
 async function getAuthStatus() {
     const cached = getTokenFromCache();
     if (!cached) return { authenticated: false, account: null };
@@ -214,6 +239,7 @@ export {
     getTokenFromCache,
     saveToken,
     refreshTokenIfNeeded,
+    getFileToken,
     getAuthStatus,
     SCOPES,
 };

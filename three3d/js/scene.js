@@ -12,7 +12,8 @@ import { buildTeamsDeeplink } from './deeplink.js';
 import { initLunchGame, triggerLunchGame } from './lunchgame.js';
 import { initChatPanel, openChat, handleTeamsNotification, isChatOpen } from './chat-panel.js';
 import { initNotifications, notify } from './notifications.js';
-import { initAuthGate, getAccount } from './auth-msal.js';
+import { initAuthGate, getAccount, getAccessToken, getFileAccessToken } from './auth-msal.js';
+import { sendMessage as graphSendMessage } from './chat-graph.js';
 
 
 // ---- 캐릭터 특성 풀 ----
@@ -675,7 +676,7 @@ o2Desk(1, 2, 0xE91E63);
 // ⚠ TDZ 방지: animate() 호출보다 앞에서 선언(아래 IIFE가 값 할당).
 let cafeBarista = null, cafeAlba = null, cafeAlba2 = null, cafeCoffeeStream = null;
 let cafeDoor = null, cafeDoorOpen = false, cafeServer2F = null, cafeCat = null, cafeDiner = null, cafeClerk = null, cafeKitchen = null, cafeStocker = null;
-const cafeSteam = [], cafeDoorPick = [], cafeCustomers = [], bodyfriendChairs = [], cafeMenuPick = [], diningGuests = [];
+const cafeSteam = [], cafeDoorPick = [], cafeCustomers = [], bodyfriendChairs = [], cafeMenuPick = [], diningGuests = [], mealPlanPick = [];
 (function buildTenPercentBodyfriend() {
     const CAFE = { x: -24, z: 0, w: 16, d: 12, floorH: 2.8 };  // 오피스(8×6)의 2배
     const H  = CAFE.floorH * 4;         // 전체 높이(4층 건물)
@@ -833,10 +834,11 @@ const cafeSteam = [], cafeDoorPick = [], cafeCustomers = [], bodyfriendChairs = 
     add(new THREE.Mesh(new THREE.PlaneGeometry(3.25, 0.7), new THREE.MeshBasicMaterial({
         map: logoTex('/3d/assets/bodyfriend-logo.jpg', '#FFFFFF', 3.25 / 0.7), toneMapped: false })),
         CAFE.x, H - 0.35, CAFE.z + CAFE.d / 2 + 0.14);
-    // 2F 식당 · 3F 매점 정면 간판(캔버스 텍스트)
-    add(new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.66), new THREE.MeshBasicMaterial({
+    // 2F 식당 · 3F 매점 정면 간판(캔버스 텍스트). 식당 간판 클릭 시 이번 주 식단표 표시.
+    const dinerSign = add(new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.66), new THREE.MeshBasicMaterial({
         map: signTex(['식당'], '#5D4037', '#FFF3E0', ['bold 110px sans-serif']), toneMapped: false })),
         CAFE.x, CAFE.floorH * 2 - 0.4, CAFE.z + CAFE.d / 2 + 0.14);
+    mealPlanPick.push(dinerSign);   // MEALPLAN-01: 식당 간판 클릭 → 식단표
     add(new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.66), new THREE.MeshBasicMaterial({
         map: signTex(['매점'], '#1565C0', '#FFFFFF', ['bold 110px sans-serif']), toneMapped: false })),
         CAFE.x, CAFE.floorH * 3 - 0.4, CAFE.z + CAFE.d / 2 + 0.14);
@@ -1136,6 +1138,14 @@ const cafeSteam = [], cafeDoorPick = [], cafeCustomers = [], bodyfriendChairs = 
     for (let k = 0; k < 5; k++) add(new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.12, 0.5),
         new THREE.MeshStandardMaterial({ color: [0xE57373, 0xFFB74D, 0x81C784, 0xFFF176, 0xA1887F][k], roughness: 0.8 })),
         CAFE.x - 4 + k * 1.5, F2 + 1.05, CAFE.z - CAFE.d / 2 + 0.7);
+    // MEALPLAN-01: 배식대 뒷벽 '이번 주 식단표' 보드(클릭 시 오버레이). 흰 프레임 + 초록 패널.
+    add(new THREE.Mesh(new THREE.PlaneGeometry(2.95, 1.22), new THREE.MeshBasicMaterial({ color: 0xFFFFFF })),
+        CAFE.x + 3.5, F2 + 1.72, CAFE.z - CAFE.d / 2 + 0.10);
+    const mealBoard = add(new THREE.Mesh(new THREE.PlaneGeometry(2.8, 1.08), new THREE.MeshBasicMaterial({
+        map: signTex(['이번 주 식단표', '👆 클릭'], '#2E7D32', '#FFFFFF', ['bold 74px sans-serif', 'bold 46px sans-serif']),
+        toneMapped: false })),
+        CAFE.x + 3.5, F2 + 1.72, CAFE.z - CAFE.d / 2 + 0.11);
+    mealPlanPick.push(mealBoard);
     // 배식 직원(기존)
     const diner = createDetailedPerson(traitsFromSeed('cafeteria-staff', 0xEF6C00));
     diner.group.scale.set(0.9, 0.9, 0.9);
@@ -1673,6 +1683,7 @@ function enterCafe() {
         ray.setFromCamera(ndv, camera);
         if (cafeDoorPick.length && ray.intersectObjects(cafeDoorPick, true).length > 0) { enterCafe(); return; }
         if (cafeMenuPick.length && ray.intersectObjects(cafeMenuPick, true).length > 0) { window.__showCafeMenu(); return; }
+        if (mealPlanPick.length && ray.intersectObjects(mealPlanPick, true).length > 0) { if (window.__showMealPlan) window.__showMealPlan(); return; }
         // 엘리베이터/발판/포털 클릭 → 층 메뉴 (아바타 미선택 시 가까운 아바타 자동 선택)
         if (elevatorPick.length && ray.intersectObjects(elevatorPick, true).length > 0) {
             if (!selectedAvatarId) { const nid = nearestAvatarId(); if (nid) setSelectedAvatar(nid); }
@@ -1683,6 +1694,345 @@ function enterCafe() {
     });
 
     renderOrders();   // 초기 렌더(로드시 저장된 주문 표시)
+})();
+
+// ============================================
+// MEALPLAN-01: 2F 식당 이번 주 식단표 오버레이
+//  - 서버가 SharePoint 주간식단표(.pptx) 첫 슬라이드를 캐시 → /api/mealplan/image 서빙.
+//  - 식당 간판·식단표 보드 클릭 또는 평일 12:00 알림 클릭 시 열림.
+// ============================================
+(function setupMealPlan() {
+    const API = `http://${location.hostname}:3300`;
+    const IMG_URL = `${API}/api/mealplan/image`;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'mealplan-overlay';
+    overlay.style.cssText = 'position:fixed; inset:0; z-index:1500; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.72); backdrop-filter:blur(3px); font-family:sans-serif;';
+
+    const box = document.createElement('div');
+    box.style.cssText = 'position:relative; width:1100px; max-width:94vw; max-height:92vh; display:flex; flex-direction:column; background:#1b1b1b; color:#eee; border-radius:14px; box-shadow:0 12px 48px rgba(0,0,0,0.6); overflow:hidden;';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'padding:14px 18px; font-size:16px; font-weight:800; letter-spacing:1px; background:#2E7D32; display:flex; align-items:center; gap:10px;';
+    const title = document.createElement('span'); title.textContent = '🍚 이번 주 식단표';
+    const metaLbl = document.createElement('span'); metaLbl.style.cssText = 'font-size:11px; font-weight:400; color:#d7ffd9; margin-left:auto;';
+    header.append(title, metaLbl);
+
+    const imgWrap = document.createElement('div');
+    imgWrap.style.cssText = 'flex:1 1 auto; min-height:0; overflow:auto; background:#111; padding:12px; display:flex; align-items:center; justify-content:center;';
+    const img = document.createElement('img');
+    img.alt = '이번 주 식단표';
+    img.style.cssText = 'max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; border-radius:8px; display:none;';
+    // iframe 임베드: 본인 SharePoint 로그인 세션으로 인증 → 관리자 동의/서버 불필요
+    const frame = document.createElement('iframe');
+    frame.setAttribute('allowfullscreen', '');
+    frame.style.cssText = 'width:100%; height:75vh; max-height:100%; border:0; border-radius:8px; display:none; background:#fff;';
+    const msg = document.createElement('div');
+    msg.style.cssText = 'color:#bbb; font-size:14px; line-height:1.7; text-align:center; padding:40px 20px; white-space:pre-line; display:none;';
+    imgWrap.append(img, frame, msg);
+
+    // iframe(임베드)이 비어 보일 때 안내 — 감지가 안 되므로 상시 힌트로 유도
+    const hint = document.createElement('div');
+    hint.textContent = 'PPT가 안 보이면 → 아래 "🔗 SharePoint에서 열기" 클릭';
+    hint.style.cssText = 'padding:6px 16px; font-size:12px; color:#9fb4c9; background:#151515; border-top:1px solid #000; text-align:center; display:none;';
+
+    const footer = document.createElement('div');
+    footer.style.cssText = 'padding:12px 16px; border-top:1px solid #000; background:#1b1b1b; display:flex; justify-content:flex-end; gap:10px;';
+    const refreshBtn = document.createElement('button'); refreshBtn.textContent = '⟳ 새로고침';
+    refreshBtn.style.cssText = 'margin-right:auto; background:#333; color:#ddd; border:1px solid #555; border-radius:8px; padding:8px 14px; font-size:13px; cursor:pointer; font-family:inherit;';
+    // 식단표 이미지를 base64 로 확보: ① 서버 캐시(/api/mealplan/image) ② 본인 파일 토큰으로 Graph 썸네일. 실패 시 null.
+    const blobToB64 = (blob) => new Promise((resolve) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result).split(',')[1] || null);
+        fr.onerror = () => resolve(null);
+        fr.readAsDataURL(blob);
+    });
+    async function getMealImageB64() {
+        // ① 서버 캐시(관리자 동의 완료 또는 수동 배치 시 존재)
+        try {
+            const st = await (await fetch(`${API}/api/mealplan`)).json();
+            if (st && st.available) {
+                const blob = await (await fetch(`${IMG_URL}?t=${Date.now()}`)).blob();
+                const bytes = await blobToB64(blob);
+                if (bytes) return { bytes, type: blob.type || 'image/jpeg' };
+            }
+        } catch { /* noop */ }
+        // ② 본인 토큰(Files.Read.All 증분 동의) → Graph 썸네일 바이너리(Graph 경유라 CORS 허용)
+        // 이 테넌트는 사용자 동의 차단 확인됨(2026-07) → 시도 비활성화. 관리자 동의 후 아래 false 제거.
+        const FILE_TOKEN_ENABLED = false;
+        try {
+            const ft = FILE_TOKEN_ENABLED ? await getFileAccessToken() : null;
+            if (!ft) return null;
+            const share = 'u!' + btoa(unescape(encodeURIComponent(sourceUrl))).replace(/=+$/, '').replace(/\//g, '_').replace(/\+/g, '-');
+            const item = await (await fetch(`https://graph.microsoft.com/v1.0/shares/${share}/driveItem?$select=id,parentReference`, {
+                headers: { Authorization: `Bearer ${ft}` } })).json();
+            const driveId = item.parentReference && item.parentReference.driveId;
+            if (!driveId || !item.id) return null;
+            for (const size of ['c1600x1200', 'large']) {
+                const r = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${item.id}/thumbnails/0/${size}/content`, {
+                    headers: { Authorization: `Bearer ${ft}` } });
+                if (r.ok) {
+                    const blob = await r.blob();
+                    const bytes = await blobToB64(blob);
+                    if (bytes) return { bytes, type: blob.type || 'image/jpeg' };
+                }
+            }
+        } catch (e) { console.warn('[mealplan] 썸네일 확보 실패:', e && e.message); }
+        return null;
+    }
+
+    // 후보 방들의 최근 메시지를 미리보기로 보여주고, 사용자가 '나만을 위해' 방을 직접 고르게 한다.
+    async function pickSelfChat(token, candidates) {
+        const rows = [];
+        for (const c of candidates.slice(0, 8)) {
+            let preview = '(메시지 없음)';
+            try {
+                const d = await (await fetch(`https://graph.microsoft.com/v1.0/chats/${encodeURIComponent(c.id)}/messages?$top=1`, {
+                    headers: { Authorization: `Bearer ${token}` } })).json();
+                const m = d.value && d.value[0];
+                if (m) {
+                    const who = (m.from && m.from.user && m.from.user.displayName) || (m.from && m.from.application && m.from.application.displayName) || '?';
+                    const txt = ((m.body && m.body.content) || '').replace(/<[^>]*>/g, '').slice(0, 60);
+                    preview = `${who}: ${txt}`;
+                }
+            } catch { /* noop */ }
+            rows.push({ id: c.id, preview });
+        }
+        return new Promise((resolve) => {
+            const ov = document.createElement('div');
+            ov.style.cssText = 'position:fixed; inset:0; z-index:1800; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.7); font-family:sans-serif;';
+            const bx = document.createElement('div');
+            bx.style.cssText = 'background:#1b1b1b; color:#eee; border-radius:12px; padding:20px 22px; width:560px; max-width:92vw; max-height:80vh; overflow-y:auto;';
+            bx.innerHTML = '<div style="font-weight:800; margin-bottom:6px;">어느 방이 \'나만을 위해\'(나와의 채팅)인가요?</div>'
+                + '<div style="font-size:12px; color:#aaa; margin-bottom:12px;">최근 메시지를 보고 골라주세요. 한 번 고르면 기억해서 다음부턴 바로 보냅니다.</div>';
+            rows.forEach((r) => {
+                const b = document.createElement('button');
+                b.textContent = r.preview;
+                b.style.cssText = 'display:block; width:100%; text-align:left; margin:4px 0; padding:9px 12px; background:#2b2b2b; color:#ddd; border:1px solid #444; border-radius:8px; cursor:pointer; font-family:inherit; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
+                b.onmouseenter = () => { b.style.background = '#3a3a3a'; };
+                b.onmouseleave = () => { b.style.background = '#2b2b2b'; };
+                b.onclick = () => { ov.remove(); resolve(r.id); };
+                bx.appendChild(b);
+            });
+            const cancel = document.createElement('button');
+            cancel.textContent = '취소';
+            cancel.style.cssText = 'margin-top:10px; background:#555; color:#fff; border:none; border-radius:8px; padding:7px 14px; cursor:pointer; font-family:inherit; font-size:13px;';
+            cancel.onclick = () => { ov.remove(); resolve(null); };
+            bx.appendChild(cancel);
+            ov.appendChild(bx);
+            document.body.appendChild(ov);
+        });
+    }
+
+    const notifyBtn = document.createElement('button'); notifyBtn.textContent = '🔔 내 팀즈로 보내기';
+    notifyBtn.style.cssText = 'background:#8e44ad; color:#fff; border:none; border-radius:8px; padding:8px 14px; font-size:13px; cursor:pointer; font-family:inherit;';
+    // 본인 토큰으로 Teams "나와의 채팅"(self-chat)에 식단표 링크 전송
+    async function sendMealPlanToMyTeams() {
+        const orig = notifyBtn.textContent;
+        notifyBtn.disabled = true; notifyBtn.textContent = '전송 중…';
+        try {
+            const token = await getAccessToken();
+            if (!token) { alert('Teams 전송을 위해 로그인이 필요합니다.'); return; }
+            const acct = getAccount() || {};
+            const myId = (acct.localAccountId || '').toLowerCase();
+            const myUpn = (acct.username || '').toLowerCase();
+            // 1순위: '기존' 나와의 채팅(나만을 위해)을 탐색해 그대로 사용 — 새 방을 만들지 않는다.
+            // 후보 = oneOnOne + 모든 멤버 ID가 나(ID 없는 멤버는 나로 안 침 → 퇴사자 방 오발송 차단).
+            // 후보 중 '멤버 1명짜리'(Teams 기본 나만을 위해 방 형태)를 우선한다.
+            const isMeMember = (m) => ((m.userId || '').toLowerCase() === myId && !!myId)
+                || ((m.userPrincipalName || m.email || '').toLowerCase() === myUpn && !!myUpn);
+            const candidates = [];
+            let url = 'https://graph.microsoft.com/v1.0/me/chats?$expand=members&$top=50';
+            for (let page = 0; url && page < 20; page++) {
+                const data = await (await fetch(url, { headers: { Authorization: `Bearer ${token}` } })).json();
+                for (const c of (data.value || [])) {
+                    if (c.chatType === 'oneOnOne' && (c.members || []).length > 0 && c.members.every(isMeMember)) candidates.push(c);
+                }
+                url = data['@odata.nextLink'] || null;
+            }
+            // 확정 순서: ⓪ 이전에 사용자가 고른 방(저장됨) → ① ID에 내 oid 2번(진짜 나만을 위해)
+            //  → ② '나 2명'으로 생성(이 테넌트는 1명 생성 거부: "requires 2 members")
+            //  → ③ 후보 방 최근 메시지를 보여주고 사용자가 직접 선택(선택은 저장되어 다음부턴 즉시 전송)
+            const savedKey = 'tp_selfchat__' + (myUpn || myId);
+            let selfChatId = localStorage.getItem(savedKey) || null;
+            if (!selfChatId) {
+                const native = candidates.find((c) => (c.id || '').toLowerCase().includes(`${myId}_${myId}`));
+                if (native) selfChatId = native.id;
+            }
+            if (!selfChatId && myId) {
+                const meMember = {
+                    '@odata.type': '#microsoft.graph.aadUserConversationMember',
+                    roles: ['owner'],
+                    'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${myId}')`,
+                };
+                const res = await fetch('https://graph.microsoft.com/v1.0/chats', {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chatType: 'oneOnOne', members: [meMember, meMember] }),
+                });
+                if (res.ok) selfChatId = (await res.json()).id;
+                else console.warn('[mealplan] self-chat 생성(나×2) 실패', res.status, await res.text().catch(() => ''));
+            }
+            if (!selfChatId && candidates.length) {
+                selfChatId = await pickSelfChat(token, candidates);
+            }
+            if (!selfChatId) { alert('Teams "나와의 채팅"을 찾지 못했어요.\nTeams 앱에서 나와의 채팅(내 이름 검색)에 아무 메시지나 하나 남긴 뒤 다시 시도해주세요.'); return; }
+            localStorage.setItem(savedKey, selfChatId);   // 다음부턴 즉시 이 방으로
+            // 식단표 '사진' 확보 시도: ① 서버 캐시 ② 본인 파일 토큰으로 Graph 썸네일. 실패 시 링크만 전송.
+            const imgB64 = await getMealImageB64();
+            if (imgB64) {
+                // 이미지 포함 메시지(hostedContents) — Teams 채팅에 사진이 바로 뜬다.
+                const r = await fetch(`https://graph.microsoft.com/v1.0/chats/${encodeURIComponent(selfChatId)}/messages`, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        body: { contentType: 'html', content: `<div>🍚 이번 주 식단표</div><img src="../hostedContents/1/$value" style="max-width:100%"><div><a href="${sourceUrl}">원본 PPT 열기</a></div>` },
+                        hostedContents: [{ '@microsoft.graph.temporaryId': '1', contentBytes: imgB64.bytes, contentType: imgB64.type }],
+                    }),
+                });
+                if (!r.ok) { console.warn('[mealplan] 이미지 메시지 실패', r.status, await r.text().catch(() => '')); await graphSendMessage(token, selfChatId, `🍚 이번 주 식단표\n${sourceUrl}`); }
+            } else {
+                await graphSendMessage(token, selfChatId, `🍚 이번 주 식단표\n${sourceUrl}`);
+            }
+            notify('system', '식단표 전송 완료', '내 Teams(나와의 채팅)로 보냈어요.', { ttl: 8000 });
+        } catch (e) {
+            alert(e && e.status === 401 ? '인증이 만료됐어요. 다시 로그인해주세요.' : `전송 실패 (${(e && e.status) || '오류'})`);
+        } finally {
+            notifyBtn.disabled = false; notifyBtn.textContent = orig;
+        }
+    }
+    notifyBtn.onclick = () => sendMealPlanToMyTeams();
+    // ── 평일 12:00 자동 전송(사용자별 opt-in) ──
+    // 브라우저(이 탭)가 열려 있어야 발송된다. 하루 1회 중복 방지.
+    const autoKey = () => 'tp_mealplan_auto__' + (((getAccount() || {}).username) || '').toLowerCase();
+    const lastAutoKey = () => 'tp_mealplan_last__' + (((getAccount() || {}).username) || '').toLowerCase();
+    setInterval(() => {
+        if (localStorage.getItem(autoKey()) !== 'on') return;
+        const now = new Date();
+        const day = now.getDay();
+        if (day === 0 || day === 6) return;                    // 월~금만
+        if (now.getHours() !== 12 || now.getMinutes() !== 0) return;   // 12:00
+        const today = now.toDateString();
+        if (localStorage.getItem(lastAutoKey()) === today) return;     // 하루 1회
+        localStorage.setItem(lastAutoKey(), today);
+        sendMealPlanToMyTeams();
+    }, 30 * 1000);
+
+    // 기억된 '내 방'을 초기화: __resetMealPlanTarget() → 다음 전송 때 선택창 다시 뜸
+    window.__resetMealPlanTarget = () => {
+        const acct = getAccount() || {};
+        localStorage.removeItem('tp_selfchat__' + ((acct.username || '').toLowerCase() || (acct.localAccountId || '').toLowerCase()));
+        return '초기화됨 — 다음 전송 때 방을 다시 고릅니다';
+    };
+    // 특정 사람과의 1:1 방으로 식단표 전송: __sendMealPlanTo('김가현')
+    // 내 채팅 목록에서 '상대 표시 이름'이 일치하는 oneOnOne 방을 찾아 보낸다(전송 전 확인창).
+    window.__sendMealPlanTo = async (personName) => {
+        const q = String(personName || '').replace(/\s+/g, '');
+        if (!q) return '이름을 입력하세요: __sendMealPlanTo("김가현")';
+        const token = await getAccessToken();
+        if (!token) { alert('로그인이 필요합니다.'); return null; }
+        const acct = getAccount() || {};
+        const myId = (acct.localAccountId || '').toLowerCase();
+        // 본인 이름이면 → 나에게 보내기(버튼과 동일 로직: 기억된 방 or 선택창)
+        if (((acct.name || '').replace(/\s+/g, '')).includes(q)) { await sendMealPlanToMyTeams(); return '나에게 전송'; }
+        const matches = [];
+        let url = 'https://graph.microsoft.com/v1.0/me/chats?$expand=members&$top=50';
+        for (let page = 0; url && page < 20; page++) {
+            const data = await (await fetch(url, { headers: { Authorization: `Bearer ${token}` } })).json();
+            for (const c of (data.value || [])) {
+                if (c.chatType !== 'oneOnOne') continue;
+                const others = (c.members || []).filter((m) => (m.userId || '').toLowerCase() !== myId);
+                if (others.some((m) => ((m.displayName || '').replace(/\s+/g, '')).includes(q))) {
+                    matches.push({ id: c.id, name: others.map((m) => m.displayName).join(', ') });
+                }
+            }
+            url = data['@odata.nextLink'] || null;
+        }
+        if (!matches.length) { alert(`'${personName}'과(와)의 1:1 채팅방을 찾지 못했어요.\nTeams에서 대화를 한 번 시작한 뒤 다시 시도해주세요.`); return null; }
+        const target = matches[0];
+        if (matches.length > 1) console.info('[mealplan] 동명 후보 여러 개, 첫 번째 사용:', matches.map((m) => m.name));
+        if (!confirm(`'${target.name}'님에게 식단표를 보낼까요?`)) return '취소됨';
+        await graphSendMessage(token, target.id, `🍚 이번 주 식단표\n${sourceUrl}`);
+        notify('system', '식단표 전송 완료', `${target.name}님에게 보냈어요.`, { ttl: 8000 });
+        return `${target.name}에게 전송 완료`;
+    };
+    // 지연 전송: __sendMealPlanToTeams(60) = 60초 뒤 내 팀즈로 전송(브라우저 탭이 열려 있어야 함)
+    window.__sendMealPlanToTeams = (delaySec = 0) => {
+        const s = Math.max(0, Number(delaySec) || 0);
+        if (s > 0) notify('system', '식단표 예약 전송', `${s}초 뒤 내 팀즈로 보냅니다.`, { ttl: 6000 });
+        setTimeout(() => sendMealPlanToMyTeams(), s * 1000);
+        return `${s}초 뒤 전송 예약됨`;
+    };
+    // 평일 12:00 자동 전송 토글(사용자별 저장)
+    const autoWrap = document.createElement('label');
+    autoWrap.style.cssText = 'display:flex; align-items:center; gap:5px; font-size:12px; color:#ccc; cursor:pointer; user-select:none;';
+    const autoChk = document.createElement('input'); autoChk.type = 'checkbox';
+    autoChk.onchange = () => {
+        localStorage.setItem(autoKey(), autoChk.checked ? 'on' : 'off');
+        notify('system', '식단표 자동 전송', autoChk.checked ? '평일 12:00에 내 팀즈로 자동 전송합니다. (이 탭이 켜져 있어야 함)' : '자동 전송을 껐습니다.', { ttl: 6000 });
+    };
+    autoWrap.append(autoChk, document.createTextNode('평일 12시 자동 전송'));
+    const openBtn = document.createElement('button'); openBtn.textContent = '🔗 SharePoint에서 열기';
+    openBtn.style.cssText = 'background:#0364B8; color:#fff; border:none; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer; font-family:inherit;';
+    const closeBtn = document.createElement('button'); closeBtn.textContent = '✕ 닫기';
+    closeBtn.style.cssText = 'background:#e74c3c; color:#fff; border:none; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer; font-family:inherit;';
+    footer.append(refreshBtn, autoWrap, notifyBtn, openBtn, closeBtn);
+    // 원본 PPT 링크(기본값). 서버 /api/mealplan 의 sourceUrl 이 있으면 덮어씀 → 서버 재시작 전에도 링크 버튼 동작.
+    let sourceUrl = 'https://ctrcentral.sharepoint.com/:p:/r/sites/CTR-News/_layouts/15/Doc.aspx?sourcedoc=%7BA713FB0F-B068-4C75-9F9D-525827278974%7D&file=CTR%EB%B9%8C%EB%94%A9%20%EC%A3%BC%EA%B0%84%EC%8B%9D%EB%8B%A8%ED%91%9C.pptx&action=edit&mobileredirect=true';
+    openBtn.onclick = () => { if (sourceUrl) window.open(sourceUrl, '_blank', 'noopener'); };
+
+    box.append(header, imgWrap, hint, footer);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const hide = () => { overlay.style.display = 'none'; };
+    closeBtn.onclick = hide;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) hide(); });   // 배경 클릭 닫기
+
+    const showMsg = (t) => { img.style.display = 'none'; frame.style.display = 'none'; hint.style.display = 'none'; msg.style.display = 'block'; msg.textContent = t; };
+    const fmtWhen = (iso) => {
+        if (!iso) return '';
+        try { const d = new Date(iso); const p = (n) => String(n).padStart(2, '0'); return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())} 갱신`; }
+        catch { return ''; }
+    };
+
+    async function load() {
+        autoChk.checked = localStorage.getItem(autoKey()) === 'on';   // 자동 전송 토글 상태 반영
+        img.style.display = 'none'; frame.style.display = 'none'; msg.style.display = 'none';
+        let status = null;
+        try { status = await (await fetch(`${API}/api/mealplan`)).json(); } catch { /* noop */ }
+        if (status && status.sourceUrl) sourceUrl = status.sourceUrl;
+        openBtn.style.display = sourceUrl ? 'inline-block' : 'none';
+        if (status && status.available) {
+            // 서버가 이미지를 가진 경우(관리자 동의 완료) → 이미지 우선, 실패 시 임베드 폴백
+            img.onload = () => { img.style.display = 'block'; frame.style.display = 'none'; hint.style.display = 'none'; msg.style.display = 'none'; };
+            img.onerror = () => embed();
+            img.src = `${IMG_URL}?t=${Date.now()}`;   // cache-bust로 최신 강제
+            metaLbl.textContent = fmtWhen(status.fetchedAt) + (status.source === 'manual' ? ' · 수동' : '');
+        } else {
+            embed();   // 이미지 없으면 본인 로그인 세션으로 iframe 임베드
+        }
+    }
+    // 원본 PPT 링크를 embedview 로 바꿔 iframe 에 표시(브라우저 SharePoint 세션으로 인증)
+    function embed() {
+        if (!sourceUrl) { showMsg('식단표 링크가 없습니다.'); return; }
+        let embedUrl = sourceUrl.replace('&mobileredirect=true', '');
+        if (embedUrl.includes('action=edit')) embedUrl = embedUrl.replace('action=edit', 'action=embedview');
+        else if (!embedUrl.includes('action=embedview')) embedUrl += (embedUrl.includes('?') ? '&' : '?') + 'action=embedview';
+        frame.src = embedUrl;
+        img.style.display = 'none'; msg.style.display = 'none'; frame.style.display = 'block'; hint.style.display = 'block';
+        metaLbl.textContent = '';
+    }
+
+    refreshBtn.onclick = async () => {
+        refreshBtn.disabled = true; refreshBtn.textContent = '⟳ 갱신 중…';
+        try { await fetch(`${API}/api/mealplan/refresh`, { method: 'POST' }); } catch { /* noop */ }
+        await load();
+        refreshBtn.disabled = false; refreshBtn.textContent = '⟳ 새로고침';
+    };
+
+    window.__showMealPlan = () => { overlay.style.display = 'flex'; load(); };
+    window.__reloadMealPlan = () => { if (overlay.style.display !== 'none') load(); };   // 서버 갱신 푸시 시 재로드
 })();
 
 // 계단 오르내리는 에이전트 — 무한 루프 애니메이션
@@ -3388,7 +3738,6 @@ const personAvatarMap = new Map();
 // 위치 덮어쓰기를 막아 사용자가 끄는 손맛을 유지한다.
 let draggingAvatar = null;
 
-<<<<<<< Updated upstream
 // ---- 선택 아바타 방향키 이동 (게임식 이동) ----
 // keyboardMoveEnabled: 좌하단 토글(또는 M키)로 on/off. on이면 방향키가 카메라 패닝 대신
 //   선택된 아바타를 카메라 기준(전/후/좌/우)으로 이동시킨다.
@@ -3405,12 +3754,11 @@ let sitHintEl = null;      // 상호작용 힌트 DOM (updateInteractHint에서 
 let evMenuArmed = true;    // 발판 진입 시 층 메뉴 1회 자동 오픈(발판을 벗어나면 재장전)
 const pressedMoveKeys = new Set();
 let selectionRing = null;
-=======
+
 // 키보드 이동 — 로그인 사용자 아바타 ID · 현재 눌린 키 · 저장 디바운스 타이머
 let myPersonId = null;
 const keysDown = new Set();
 let _savePositionTimer = null;
->>>>>>> Stashed changes
 
 animate();
 
@@ -5437,7 +5785,6 @@ function connectWS() {
                     d.subject ? `회의: ${d.subject}` : '화상회의가 시작되었습니다.',
                     { tag: `meeting-${d.personId || 'x'}`, onClick: () => focusAvatar(d.personId) });
             }
-<<<<<<< Updated upstream
         } else if (d.type === 'order-reminder') {
             // ORDER-01: 월 09:00 — 음료 고르기 알림(클릭 시 메뉴 오픈)
             notify('system', '텐퍼센트 커피 주문', '오늘 마실 음료를 골라 주문에 담아주세요! (마감 09:18)',
@@ -5449,7 +5796,13 @@ function connectWS() {
         } else if (d.type === 'order-cleared') {
             // ORDER-01: 월 10:00 — 주문 목록 clear
             if (window.__clearOrders) window.__clearOrders();
-=======
+        } else if (d.type === 'mealplan-reminder') {
+            // MEALPLAN-01: 평일 12:00 — 점심 전 식단표 알림(클릭 시 오버레이)
+            notify('system', '오늘 점심 메뉴', '2층 식당 이번 주 식단표를 확인하세요!',
+                { tag: 'mealplan-reminder', ttl: 15000, onClick: () => { if (window.__showMealPlan) window.__showMealPlan(); } });
+        } else if (d.type === 'mealplan-updated') {
+            // MEALPLAN-01: 식단표 이미지 갱신됨 — 오버레이가 열려 있으면 다시 로드
+            if (window.__reloadMealPlan) window.__reloadMealPlan();
         } else if (d.type === 'current-users') {
             // P3: 세션 추적 시작 — 현재 온라인 사용자 목록으로 전체 아바타 가시성 초기화
             _sessionTrackingActive = true;
@@ -5468,7 +5821,6 @@ function connectWS() {
                 onlineEmails.delete(d.email.toLowerCase());
                 _applySessionVisibilityForEmail(d.email);
             }
->>>>>>> Stashed changes
         }
     };
     _ws.onclose = () => { document.getElementById('conn-status').textContent = 'Reconnecting...'; document.getElementById('conn-status').style.color = '#f00'; setTimeout(connectWS, 3000); };
@@ -5588,7 +5940,8 @@ window.__applyWeather = applyWeather;
 window.__forceDayPhase = null; // 0..1 설정시 시간 고정
 
 window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
-const MOVE_KEYS = new Set(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
+// P3(blackwatermelon) '내 아바타 이동'용 키셋 — Gahyun의 MOVE_KEYS(선택아바타·화살표전용)와 이름 분리(중복선언 방지).
+const MY_MOVE_KEYS = new Set(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
 
 window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {
@@ -5597,7 +5950,7 @@ window.addEventListener('keydown', (e) => {
         return;
     }
     // 이동 키 — 텍스트 입력 중에는 무시
-    if (MOVE_KEYS.has(e.code) && !_isTyping()) {
+    if (MY_MOVE_KEYS.has(e.code) && !_isTyping()) {
         e.preventDefault(); // 화살표 키의 페이지 스크롤 방지
         keysDown.add(e.code);
         return;
@@ -5615,7 +5968,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('keyup', (e) => {
-    if (MOVE_KEYS.has(e.code)) {
+    if (MY_MOVE_KEYS.has(e.code)) {
         keysDown.delete(e.code);
         // 마지막 이동 키를 뗄 때 즉시 서버 저장
         if (keysDown.size === 0) _saveMyPosition();

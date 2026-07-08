@@ -150,6 +150,28 @@ export async function getAccessToken() {
     }
 }
 
+/**
+ * MEALPLAN-01: SharePoint 파일 읽기용 토큰(Files.Read.All) — 증분 동의.
+ * silent 시도 후 실패 시 동의 팝업 1회. 테넌트가 사용자 동의를 막으면 null(폴백: 링크 전송).
+ * @returns {Promise<string|null>}
+ */
+const FILE_SCOPES = ['Files.Read.All'];
+export async function getFileAccessToken() {
+    if (!pca || !account) return null;
+    try {
+        const r = await pca.acquireTokenSilent({ scopes: FILE_SCOPES, account });
+        return r.accessToken;
+    } catch (e) {
+        try {
+            const r = await pca.acquireTokenPopup({ scopes: FILE_SCOPES, account });
+            return r.accessToken;
+        } catch (e2) {
+            console.warn('[auth-msal] 파일 토큰 실패(테넌트 동의 제한일 수 있음):', e2 && e2.message);
+            return null;
+        }
+    }
+}
+
 /** 로그아웃(선택). */
 export async function logout() {
     if (pca && account) {

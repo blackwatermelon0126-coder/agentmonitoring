@@ -7,9 +7,10 @@ import { fileURLToPath } from 'url';
 import pino from 'pino';
 import { ROLES, ROLE_NAMES } from './shared/roles.js';
 import { loadRecentEntries, appendEntry, ACTIVITY_LIMIT as _ACTIVITY_LIMIT } from './activity-log.js';
-import { getDeviceCodeUrl, getAuthStatus, refreshTokenIfNeeded, getTokenFromCache } from './auth/msalClient.js';
+import { getDeviceCodeUrl, getAuthStatus, refreshTokenIfNeeded, getFileToken, getTokenFromCache } from './auth/msalClient.js';
 import { startPolling, graphGet, GRAPH_BASE } from './teams/teamsPoller.js';
 import { listChats, getMessages, sendMessage } from './teams/chatService.js';
+import { refreshFromGraph as refreshMealPlan, getMealPlanStatus, readImage as readMealPlanImage } from './menu/mealPlan.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 
@@ -610,6 +611,17 @@ app.post('/api/people', (req, res) => {
     if (!name || !email) {
         return res.status(400).json({ error: 'name과 email은 필수입니다.' });
     }
+    // 이메일 기준 중복 방지 — 재로그인 시 같은 사람 아바타가 중복 생성되지 않게 기존 항목 반환
+    const emailKey = String(email).toLowerCase();
+    const existing = people.find(p => (p.email || '').toLowerCase() === emailKey);
+    if (existing) {
+        existing.name = name || existing.name;
+        if (color) existing.color = color;
+        savePeople(people);
+        broadcastPeople(people);
+        logger.info({ event: 'person_reused', id: existing.id, email }, 'Person already exists — reused');
+        return res.status(200).json(existing);
+    }
     const person = {
         id:          randomUUID(),
         name,
@@ -782,6 +794,69 @@ function startOrderScheduler() {
     logger.info({ event: 'order_scheduler_started' }, '주문 스케줄러 시작(월 09:00·09:18·09:20·10:00, 공휴일 제외)');
 }
 
+// ══════════════════════════════════════════════════════════════════
+// 식단표 (MEALPLAN-01)
+//  - SharePoint 주간식단표(.pptx) 첫 슬라이드를 Graph 썸네일로 받아 캐시(menu/mealPlan.js).
+//  - 서버 시작 시 1회 + 평일 07:30 백그라운드 갱신(eTag 변경 시에만 재다운로드).
+//  - 평일(공휴일 제외) 12:00 점심 전 알림(WS mealplan-reminder). 신분 격리: 서버 계정 토큰 사용.
+//  - 폴백: 권한 미승인/실패 시 기존 캐시 유지. data/mealplan.img 수동 배치 시 그대로 서빙.
+// ══════════════════════════════════════════════════════════════════
+
+/** 식단표 이미지 갱신(파일 스코프 전용 토큰 사용). 실패해도 조용히 기존 캐시 유지 */
+async function refreshMealPlanJob(reason) {
+    const token = await getFileToken();   // Files.Read.All(관리자 동의 시 silent). 미동의 시 null → 폴백
+    const r = await refreshMealPlan(token, (o, msg) => logger.info(o, msg || '식단표'));
+    logger.info({ event: 'mealplan_refresh', reason, status: r.status, updated: r.updated }, `식단표 갱신(${reason}): ${r.status}`);
+    if (r.updated) broadcast({ type: 'mealplan-updated' });
+    return r;
+}
+
+/** GET /api/mealplan — 캐시 상태(갱신시각·소스·오류) */
+app.get('/api/mealplan', (req, res) => res.json(getMealPlanStatus()));
+
+/** GET /api/mealplan/image — 캐시된 식단표 이미지 서빙 */
+app.get('/api/mealplan/image', (req, res) => {
+    const img = readMealPlanImage();
+    if (!img) return res.status(404).json({ error: 'no_image' });
+    res.set('Content-Type', img.contentType);
+    res.set('Cache-Control', 'no-cache');
+    res.send(img.buffer);
+});
+
+/** POST /api/mealplan/refresh — 수동 갱신 트리거(읽기 전용·eTag 가드라 개방) */
+app.post('/api/mealplan/refresh', async (req, res) => {
+    const r = await refreshMealPlanJob('manual');
+    res.json({ ok: true, ...r });
+});
+
+// ── 식단표 스케줄러(평일·공휴일 제외) — 30초마다 확인, 슬롯당 1회 ──
+const MEALPLAN_SCHEDULE = [
+    { hm: '07:30', run: () => { refreshMealPlanJob('daily'); } },        // 백그라운드 갱신(알림 없음)
+    { hm: '12:00', run: () => broadcast({ type: 'mealplan-reminder' }) }, // 점심 전 알림
+];
+const mpFiredSlots = new Set();
+function tickMealPlanSchedule() {
+    const now = new Date();
+    const day = now.getDay();
+    if (day === 0 || day === 6) return;             // 평일만(일=0, 토=6 제외)
+    const dateStr = ymd(now);
+    if (KR_HOLIDAYS.has(dateStr)) return;           // 공휴일 제외
+    const hm = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+    for (const slot of MEALPLAN_SCHEDULE) {
+        if (slot.hm !== hm) continue;
+        const key = `${dateStr} ${hm}`;
+        if (mpFiredSlots.has(key)) continue;        // 슬롯당 1회
+        mpFiredSlots.add(key);
+        logger.info({ event: 'mealplan_schedule_fire', slot: hm }, `식단표 스케줄 실행: ${hm}`);
+        try { slot.run(); } catch (e) { logger.warn({ event: 'mealplan_schedule_error', err: e.message }, '식단표 스케줄 오류'); }
+    }
+}
+function startMealPlanScheduler() {
+    setInterval(tickMealPlanSchedule, 30 * 1000);
+    refreshMealPlanJob('startup');   // 시작 시 1회 갱신(토큰 없으면 조용히 스킵)
+    logger.info({ event: 'mealplan_scheduler_started' }, '식단표 스케줄러 시작(평일 07:30 갱신·12:00 알림, 공휴일 제외)');
+}
+
 const PORT = 3300;
 
 // 직접 실행 시에만 포트 바인딩 (테스트에서는 바인딩 없이 import 가능)
@@ -795,6 +870,8 @@ if (process.argv[1] === __filename) {
         });
         // ORDER-01: 텐퍼센트 커피 주문 월요일 스케줄러 시작
         startOrderScheduler();
+        // MEALPLAN-01: 2F 식당 식단표 스케줄러 시작(시작 시 1회 갱신 포함)
+        startMealPlanScheduler();
     });
 }
 
