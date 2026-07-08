@@ -32,60 +32,74 @@ export async function initAuthGate({ onAuthenticated } = {}) {
         return;
     }
 
-    pca = new window.msal.PublicClientApplication({
-        auth: {
-            clientId: CLIENT_ID,
-            authority: `https://login.microsoftonline.com/${TENANT_ID}`,
-            // 리다이렉트 URI = 앱 페이지(/3d/). Azure SPA 등록 URI와 정확히 일치해야 함.
-            redirectUri: window.location.origin + '/3d/',
-        },
-        cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false },
-    });
+    // 오버레이를 먼저 그린다 — initialize()가 OIDC 메타데이터 네트워크 요청으로
+    // hang할 경우에도 사용자가 화면을 볼 수 있도록. pending=true로 버튼 비활성.
+    buildOverlay(null, false, true);
 
-    await pca.initialize();
-
-    // 리다이렉트 로그인 응답 처리(로그인 후 복귀 시)
     try {
-        const resp = await pca.handleRedirectPromise();
-        if (resp && resp.account) account = resp.account;
+        pca = new window.msal.PublicClientApplication({
+            auth: {
+                clientId: CLIENT_ID,
+                authority: `https://login.microsoftonline.com/${TENANT_ID}`,
+                redirectUri: window.location.origin + '/3d/',
+            },
+            cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false },
+        });
+
+        await pca.initialize();
+
+        // 리다이렉트 로그인 응답 처리(로그인 후 복귀 시)
+        try {
+            const resp = await pca.handleRedirectPromise();
+            if (resp && resp.account) account = resp.account;
+        } catch (e) {
+            console.warn('[auth-msal] handleRedirectPromise 오류:', e && e.message);
+        }
+
+        // 캐시된 계정 확인
+        if (!account) {
+            const accts = pca.getAllAccounts();
+            if (accts && accts.length) account = accts[0];
+        }
+
+        if (account) {
+            pca.setActiveAccount(account);
+            pass();
+        } else {
+            // 이미 overlay가 있으므로 — 로그인 버튼 활성화(버튼이 disabled 상태였다면 복구)
+            const btn = overlay && overlay.querySelector('#auth-login-btn');
+            if (btn) { btn.disabled = false; btn.textContent = '🔷 Microsoft로 로그인'; }
+        }
     } catch (e) {
-        console.warn('[auth-msal] handleRedirectPromise 오류:', e && e.message);
-    }
-
-    // 캐시된 계정 확인
-    if (!account) {
-        const accts = pca.getAllAccounts();
-        if (accts && accts.length) account = accts[0];
-    }
-
-    if (account) {
-        pca.setActiveAccount(account);
-        pass();
-    } else {
-        buildOverlay();
+        console.error('[auth-msal] 초기화 오류:', e && e.message);
+        setMsg(`초기화 실패: ${e && e.message} — 새로고침 해주세요.`, true);
     }
 }
 
-function buildOverlay(errorMsg, isError) {
+// pending: true = MSAL 초기화 중(버튼 비활성), false = 준비 완료
+function buildOverlay(errorMsg, isError, pending = false) {
+    if (overlay) return; // 중복 생성 방지
     overlay = document.createElement('div');
     overlay.id = 'auth-overlay';
     overlay.style.cssText = `
-        position:fixed; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center;
+        position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center;
         background:rgba(10,15,25,0.92); backdrop-filter:blur(6px); font-family:monospace; color:#fff;`;
     const card = document.createElement('div');
     card.style.cssText = `
         width:360px; max-width:90vw; background:rgba(0,0,0,0.55); border:1px solid #2a3550;
         border-radius:14px; padding:28px 26px; text-align:center; box-shadow:0 10px 40px rgba(0,0,0,0.5);`;
+    const btnLabel = pending ? '연결 중…' : '🔷 Microsoft로 로그인';
     card.innerHTML = `
         <div style="font-size:20px; font-weight:bold; letter-spacing:1px; margin-bottom:6px;">FOR.LAB META OFFICE</div>
         <div style="color:#9fb3d1; font-size:12px; margin-bottom:22px;">Microsoft Azure 조직 계정으로 로그인</div>
-        <button id="auth-login-btn" style="width:100%; background:#2F6FED; color:#fff; border:none; border-radius:8px;
-            padding:11px; font-family:monospace; font-size:14px; font-weight:bold; cursor:pointer;">🔷 Microsoft로 로그인</button>
-        <div id="auth-msg" style="color:${isError ? '#f66' : '#9fb3d1'}; font-size:12px; margin-top:16px; line-height:1.6; word-break:break-all;">${errorMsg || ''}</div>`;
+        <button id="auth-login-btn" ${pending ? 'disabled' : ''} style="width:100%; background:#2F6FED; color:#fff; border:none; border-radius:8px;
+            padding:11px; font-family:monospace; font-size:14px; font-weight:bold; cursor:${pending ? 'default' : 'pointer'}; opacity:${pending ? '0.6' : '1'};">${btnLabel}</button>
+        <div id="auth-msg" style="color:${isError ? '#f66' : '#9fb3d1'}; font-size:12px; margin-top:16px; line-height:1.6; word-break:break-all;">${errorMsg || (pending ? 'Azure 인증 서버 연결 중...' : '')}</div>`;
     overlay.appendChild(card);
     document.body.appendChild(overlay);
     const btn = card.querySelector('#auth-login-btn');
     btn.onclick = async () => {
+        if (!pca) return;
         btn.disabled = true;
         btn.textContent = '로그인 창으로 이동 중…';
         try {
