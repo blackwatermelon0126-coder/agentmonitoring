@@ -266,7 +266,7 @@ export function isChatOpen(chatId) {
  * @param {{ apiBase: string }} opts
  */
 export function initChatPanel({ apiBase }) {
-    API_BASE = apiBase || `http://${location.hostname}:3300`;
+    API_BASE = apiBase ?? ''; // '' = 같은 origin(상대경로). nginx HTTPS 뒤/로컬 3300 양쪽 동작
 
     // 런처 버튼 — '+ 사람 추가'(bottom:16px) 위에 배치
     const launcher = document.createElement('button');

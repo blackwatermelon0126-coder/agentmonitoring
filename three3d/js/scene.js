@@ -1453,7 +1453,7 @@ function enterCafe() {
     // ---- 주문 저장(로그인 사용자별 localStorage) ----
     const keyFor = () => 'tp_orders__' + ((getAccount() && getAccount().username) || 'guest');
     const loadOrders = () => { try { return JSON.parse(localStorage.getItem(keyFor())) || []; } catch { return []; } };
-    const ORDER_API = `http://${location.hostname}:3300`;
+    const ORDER_API = ''; // 같은 origin(상대경로) — nginx HTTPS 뒤/로컬 3300 양쪽 동작
     // 저장 = 로컬(본인 뷰) + 서버 동기화(ORDER-01 집계용). 비로그인 시 서버 동기화는 스킵.
     const saveOrders = (list) => {
         try { localStorage.setItem(keyFor(), JSON.stringify(list)); } catch { /* noop */ }
@@ -1702,7 +1702,7 @@ function enterCafe() {
 //  - 식당 간판·식단표 보드 클릭 또는 평일 12:00 알림 클릭 시 열림.
 // ============================================
 (function setupMealPlan() {
-    const API = `http://${location.hostname}:3300`;
+    const API = ''; // 같은 origin(상대경로)
     const IMG_URL = `${API}/api/mealplan/image`;
 
     const overlay = document.createElement('div');
@@ -3307,7 +3307,7 @@ function _saveMyPosition() {
     const av = personAvatarMap.get(myPersonId);
     if (!av) return;
     const pos = scenePosToPerson(av.group.position.x, av.group.position.z);
-    fetch(`http://localhost:3300/api/people/${myPersonId}`, {
+    fetch(`/api/people/${myPersonId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ position: pos }),
@@ -3771,7 +3771,7 @@ function cssColorToHex(css) {
 
 async function initFromRolesApi() {
     try {
-        const res = await fetch(`http://${location.hostname}:3300/api/roles`);
+        const res = await fetch(`/api/roles`);
         if (!res.ok) throw new Error(`/api/roles HTTP ${res.status}`);
         const { roles } = await res.json();
 
@@ -4983,7 +4983,7 @@ function updatePersonLabels() {
         if (!email) return;
         const color = prompt('색상 (예: #4A90E2):', '#4A90E2') || '#4A90E2';
         try {
-            const res = await fetch('http://localhost:3300/api/people', {
+            const res = await fetch('/api/people', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name, email, color, position: { x: 400, y: 350 } }),
@@ -5000,7 +5000,7 @@ function updatePersonLabels() {
 // 기존 패널 스타일과 일관: 반투명 검정 배경·monospace·흰 글씨.
 // 위치: 좌상단(#info·people-panel·status-panel 과 겹치지 않는 빈 영역).
 (function createOrgUserPicker3D() {
-    const API_BASE = `http://${location.hostname}:3300`;
+    const API_BASE = ''; // 같은 origin(상대경로)
     // 사용자 추가 시 순환 지정할 색상 팔레트 (10색 — 6명째부터 셔츠색 중복 완화)
     const COLOR_PALETTE = [
         '#4A90E2', '#E67E22', '#27AE60', '#8E44AD', '#E74C3C',
@@ -5453,7 +5453,7 @@ function persistPersonPosition(id) {
     const av = personAvatarMap.get(id);
     if (!av) return;
     const pos = scenePosToPerson(av.group.position.x, av.group.position.z);
-    fetch(`http://${location.hostname}:3300/api/people/${id}`, {
+    fetch(`/api/people/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ position: pos }),
@@ -5740,7 +5740,8 @@ const onlineEmails = new Set();      // 현재 세션에 접속 중인 사용자
 let _sessionTrackingActive = false;  // current-users 최초 수신 후 true(그 전까지는 하위호환으로 전원 표시)
 
 function connectWS() {
-    _ws = new WebSocket(`ws://${location.hostname}:3300`);
+    // 같은 origin WebSocket — HTTPS(nginx)면 wss, 로컬 http면 ws. 포트는 location.host가 자동 포함.
+    _ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`);
     _ws.onopen = () => {
         document.getElementById('conn-status').textContent = 'Connected';
         document.getElementById('conn-status').style.color = '#0f0';
@@ -5870,7 +5871,7 @@ function _applySessionVisibilityAll() {
 }
 
 // ---- 인앱 Teams 채팅 UI 초기화 (CHAT-01) ----
-initChatPanel({ apiBase: `http://${location.hostname}:3300` });
+initChatPanel({ apiBase: '' }); // 같은 origin(상대경로)
 
 // ---- Windows(OS) 데스크톱 알림 초기화 (chat/agent/meeting/system, 클릭 시 기능 연결) ----
 initNotifications();
@@ -5882,7 +5883,7 @@ async function ensureSelfAvatar(account) {
         const email = (account && account.username) || '';                  // UPN(=이메일 형태)
         const name  = (account && (account.name || account.username)) || '';
         if (!email) return;
-        const base = `http://${location.hostname}:3300`;
+        const base = ''; // 같은 origin(상대경로)
         const people = await fetch(`${base}/api/people`).then((r) => r.json()).catch(() => []);
         const existing = Array.isArray(people) && people.find((p) => (p.email || '').toLowerCase() === email.toLowerCase());
         if (existing) {
@@ -5927,7 +5928,7 @@ setInterval(() => {
 }, 20000);
 
 // 초기 사람 목록 fetch
-fetch('http://localhost:3300/api/people')
+fetch('/api/people')
     .then(r => r.json())
     .then(people => syncPersonAvatars(people))
     .catch(() => {});
@@ -5946,7 +5947,7 @@ const MY_MOVE_KEYS = new Set(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown',
 window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {
         e.preventDefault();
-        fetch('http://localhost:3300/demo', { method: 'POST' }).catch(() => {});
+        fetch('/demo', { method: 'POST' }).catch(() => {});
         return;
     }
     // 이동 키 — 텍스트 입력 중에는 무시
