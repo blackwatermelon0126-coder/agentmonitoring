@@ -1,6 +1,4 @@
-# Agent Monitor - Claude Code 시각화 모니터링 서버
-# - WebSocket + Express on Node 20 (Alpine)
-# - 정적 자산: phaser2d/, three3d/ (three3d/node_modules/three 포함)
+# METAOFFICE — Node 20 Alpine
 FROM node:20-alpine
 
 WORKDIR /app
@@ -9,11 +7,8 @@ WORKDIR /app
 COPY server/package*.json   ./server/
 COPY three3d/package*.json  ./three3d/
 
-# server 의존성 (express, ws)
-RUN cd server  && npm ci --omit=dev --no-audit --no-fund
-
-# three3d 의존성 (three) — server.js 가 ../three3d/node_modules/three 를 static 으로 노출
-RUN cd three3d && npm ci --omit=dev --no-audit --no-fund
+RUN cd server  && npm install --omit=dev --no-audit --no-fund
+RUN cd three3d && npm install --omit=dev --no-audit --no-fund
 
 # 소스 복사 (의존성은 이미 위에서 설치됨)
 COPY server/  ./server/
