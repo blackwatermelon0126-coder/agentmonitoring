@@ -1,0 +1,39 @@
+# METAOFFICE 프로덕션 배포 (10.10.33.36)
+# 기동:  docker compose -f docker-compose.prod.yml up -d --build
+# 중지:  docker compose -f docker-compose.prod.yml down
+# 로그:  docker compose -f docker-compose.prod.yml logs -f
+#
+# 전제: 기존 nginx Docker 컨테이너와 같은 네트워크에 참여.
+# NGINX_NETWORK 값은 서버에서 확인 후 교체:
+#   docker inspect <nginx-container-name> --format '{{json .NetworkSettings.Networks}}'
+
+services:
+  metaoffice-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: metaoffice:prod
+    container_name: metaoffice-app
+    expose:
+      - "3300"            # 내부 전용 — nginx 경유만 접근 가능
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - ALLOW_REMOTE_HOOKS=true    # 원격 요청 loopback 제약 해제
+    volumes:
+      - metaoffice_data:/app/server/data   # people.json, token.json 영속화
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3300/api/status"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    networks:
+      - docker-infra_infra-net
+
+volumes:
+  metaoffice_data:
+
+networks:
+  docker-infra_infra-net:
+    external: true

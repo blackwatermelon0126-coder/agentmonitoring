@@ -1,4 +1,4 @@
-name: CI
+name: CI/CD
 
 on:
   push:
@@ -7,7 +7,9 @@ on:
     branches: [main, master]
 
 jobs:
-  build:
+  # ── CI: lint + test (GitHub-hosted) ─────────────────────────────────────────
+  test:
+    name: Test
     runs-on: ubuntu-latest
 
     defaults:
@@ -33,3 +35,27 @@ jobs:
 
       - name: Test
         run: npm test
+
+  # ── CD: Docker 배포 (self-hosted @ 10.10.33.36) ─────────────────────────────
+  # master push 에만 실행 (PR은 test만)
+  # Runner 등록 시 label: metaoffice-prod 으로 등록 필요
+  deploy:
+    name: Deploy → metaoffice.fllab.internal
+    runs-on: [self-hosted, metaoffice-prod]
+    needs: test
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build & Deploy
+        run: |
+          docker compose -f docker-compose.prod.yml build --no-cache
+          docker compose -f docker-compose.prod.yml up -d
+
+      - name: Health Check
+        run: |
+          sleep 10
+          docker compose -f docker-compose.prod.yml ps
+          wget -qO- http://localhost:3300/api/status

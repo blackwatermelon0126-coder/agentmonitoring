@@ -8,3 +8,4 @@ data/
 data/*.jsonl
 *.db
 coverage/
+deploy/ssl/

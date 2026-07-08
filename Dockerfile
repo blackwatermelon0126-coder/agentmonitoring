@@ -16,14 +16,13 @@ RUN cd server  && npm ci --omit=dev --no-audit --no-fund
 RUN cd three3d && npm ci --omit=dev --no-audit --no-fund
 
 # 소스 복사 (의존성은 이미 위에서 설치됨)
-COPY server/   ./server/
-COPY phaser2d/ ./phaser2d/
-COPY three3d/  ./three3d/
+COPY server/  ./server/
+COPY three3d/ ./three3d/
 
 ENV NODE_ENV=production
 
-# 데이터 디렉토리 생성 (activity.jsonl 영속화용 volume 마운트 포인트)
-RUN mkdir -p /app/data
+# 데이터 디렉토리 — people.json, token.json 등 런타임 파일 영속화 포인트
+RUN mkdir -p /app/server/data
 
 EXPOSE 3300
 
