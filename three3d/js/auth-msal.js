@@ -42,6 +42,8 @@ export async function initAuthGate({ onAuthenticated } = {}) {
                 clientId: CLIENT_ID,
                 authority: `https://login.microsoftonline.com/${TENANT_ID}`,
                 redirectUri: window.location.origin + '/3d/',
+                // 로그아웃 후 복귀 URI — 로그인 오버레이로 되돌아와 재로그인 가능.
+                postLogoutRedirectUri: window.location.origin + '/3d/',
             },
             cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false },
         });
@@ -119,9 +121,40 @@ function setMsg(html, isError) {
 
 function pass() {
     if (overlay) { overlay.remove(); overlay = null; }
+    buildUserBadge();   // 로그인 사용자 배지 + 로그아웃 버튼 표시
     if (typeof onAuthed === 'function') {
         try { onAuthed(account); } catch (e) { console.warn('[auth-msal] onAuthenticated 오류:', e && e.message); }
     }
+}
+
+let badge = null;
+/** 로그인 사용자 배지(좌상단) — 이름 표시 + 로그아웃(재로그인) 버튼. */
+function buildUserBadge() {
+    if (badge) { badge.remove(); badge = null; }
+    const name = (account && (account.name || account.username)) || '사용자';
+    badge = document.createElement('div');
+    badge.id = 'auth-user-badge';
+    badge.style.cssText = `
+        position:fixed; top:10px; left:10px; z-index:900; display:flex; align-items:center; gap:8px;
+        background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); border:1px solid #2a3550; border-radius:8px;
+        padding:6px 10px; font-family:monospace; font-size:12px; color:#fff;`;
+    const label = document.createElement('span');
+    label.textContent = `👤 ${name}`;
+    label.style.cssText = 'max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    const btn = document.createElement('button');
+    btn.textContent = '로그아웃';
+    btn.style.cssText = `
+        background:#2F6FED; color:#fff; border:none; border-radius:6px; padding:4px 10px;
+        font-family:monospace; font-size:11px; cursor:pointer;`;
+    btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = '로그아웃 중…';
+        try { await logout(); }
+        catch (e) { console.warn('[auth-msal] 로그아웃 오류:', e && e.message); btn.disabled = false; btn.textContent = '로그아웃'; }
+    };
+    badge.appendChild(label);
+    badge.appendChild(btn);
+    document.body.appendChild(badge);
 }
 
 /** 로그인 사용자 계정({ name, username=UPN, ... }) 반환. */
@@ -172,9 +205,15 @@ export async function getFileAccessToken() {
     }
 }
 
-/** 로그아웃(선택). */
+/**
+ * 로그아웃 → MS 로그아웃 후 /3d/ 복귀 → 로그인 오버레이 재노출(본인/다른 계정 재로그인).
+ * 배지 버튼에서 호출. postLogoutRedirectUri 는 PCA 설정에 지정됨.
+ */
 export async function logout() {
-    if (pca && account) {
-        await pca.logoutRedirect({ account });
-    }
+    if (!pca || !account) return;
+    if (badge) { badge.remove(); badge = null; }
+    await pca.logoutRedirect({
+        account,
+        postLogoutRedirectUri: window.location.origin + '/3d/',
+    });
 }
