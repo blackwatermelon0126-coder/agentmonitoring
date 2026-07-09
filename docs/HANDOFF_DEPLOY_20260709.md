@@ -35,10 +35,15 @@ docker compose -f docker-compose.prod.yml up -d
   - `metaoffice-mo-runner` → 레포 `blackwatermelon0126-coder/agentmonitoring`, 라벨 `metaoffice-prod`, `~/actions-runner-mo` (이번에 추가)
 - `.github/workflows/ci.yml`의 `deploy` job이 `runs-on: [self-hosted, metaoffice-prod]`.
 
-### ⚠ 미해결: push 자동배포가 실제로 안 돎
-- `test` job(ubuntu, 174 통과)·runner 온라인 확인됨에도 `deploy` job이 컨테이너를 갱신하지 못함.
-- 서버 레포(`~/agentmonitoring`)가 한동안 옛 커밋에 정체돼 있었고, runner의 `_work` 체크아웃 흔적이 없었음 → **deploy job이 실제로 실행되지 않았거나 실패**로 추정.
-- 현재는 **수동 배포로 운영 중**. 다음 세션에서 deploy job 실행 로그(Actions 탭/`~/actions-runner-mo/_diag`)를 확인해 원인 규명 필요.
+### ✅ 자동배포 복구 완료 (2026-07-09, 커밋 e530fe8)
+- **근본 원인**: `test` job의 `Install dependencies`(`npm ci`)가 **Linux에서 실패** →
+  `server/package-lock.json`이 package.json과 불일치(`@emnapi/core@1.11.2`·`@emnapi/runtime@1.11.2` 누락).
+  lock이 Windows에서 생성돼 Linux 전용 wasm 의존성이 빠짐 → Windows `npm ci`는 통과, Linux CI만 실패.
+  test 실패 → `deploy`(needs: test) **skip** → 자동배포가 시작조차 안 됨. (runner는 정상, 잡을 받은 적 없었던 것)
+- **해결**: lock을 Linux(node:20 컨테이너)에서 `npm install --package-lock-only`로 재생성 →
+  Windows·Linux 양쪽 `npm ci` 통과 검증 후 커밋. 이후 push → test 통과 → deploy가 `metaoffice-mo-runner`에서 실행 → 컨테이너 자동 갱신 확인.
+- **이제 `git push origin master` 하면 자동 배포됨.** (test → deploy → docker build → up -d → health check)
+- 진단 팁: 실패 시 GitHub API `…/actions/runs`·`…/runs/{id}/jobs` 로 잡·스텝 확인. runner 실행이력 = `~/actions-runner-mo/_work`·`_diag`.
 
 ## 3. 이번 세션 구현 (커밋 순)
 
@@ -77,10 +82,11 @@ docker compose -f docker-compose.prod.yml up -d
 
 ## 5. 미완/다음 작업
 
-1. **CI 자동배포 복구** — deploy job이 실제 배포하도록 (2번 참조). 복구 전까지 수동 배포.
+1. ~~CI 자동배포 복구~~ **완료(2026-07-09)** — 2번 참조. 이제 `git push origin master` = 자동 배포.
 2. ~~펫 인터랙션~~ **완료(2026-07-09)** — 근접 클릭 시 아바타 쓰다듬기 + 펫 배까기 구현됨.
 3. 접근/1인칭 뷰 카메라 거리·감도 사용자 튜닝 여지.
 4. (튜닝 여지) 펫 belly-up 롤 축이 아바타 facing에 따라 완벽하진 않음(다리 버둥+꼬리로 커버). 필요 시 로컬 장축 롤로 정교화.
+5. Dependabot PR(express 5·eslint 10 등)이 열려 있음 — 메이저 업글은 검토 후 머지.
 
 ## 6. 자격증명·주의
 - 서버 비번은 세션 한정. `deploy/ssl/` 커밋 금지(`.gitignore` 등록됨).
