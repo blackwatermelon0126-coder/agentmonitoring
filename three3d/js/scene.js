@@ -5799,6 +5799,17 @@ function updatePersonLabels() {
         const id = mesh.userData.personId;
         const av = personAvatarMap.get(id);
         if (!av) return;
+
+        // AI 진행 중인 아바타를 클릭하면 → 에이전트 활동 모달을 띄운다(선택/드래그 대신).
+        const _ek = (av.email || '').toLowerCase();
+        const _roles = avatarAgents.get(_ek);
+        const _aiWorking = _roles && Object.values(_roles).some(s => s && s.status === 'working');
+        if (_aiWorking) {
+            openAiPanel(av.email, av.displayName);
+            ev.preventDefault();
+            return;
+        }
+
         setSelectedAvatar(id);    // 클릭한 아바타를 선택(방향키 이동 대상)
         draggingAvatar = av;
         draggingAvatar.personId = id;
