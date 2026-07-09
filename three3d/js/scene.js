@@ -5768,7 +5768,7 @@ window.addEventListener('keydown', (e) => {
             return;
         }
     }
-    if (keyboardMoveEnabled && MOVE_KEYS.has(e.code)) {
+    if (keyboardMoveEnabled && MOVE_KEYS.has(e.code) && !_isTyping()) {
         e.preventDefault();
         e.stopPropagation();
         if (sittingSeat) standUp();                    // 앉은 상태에서 방향키 → 먼저 일어섬
@@ -6071,6 +6071,9 @@ window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeig
 const MY_MOVE_KEYS = new Set(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
 
 window.addEventListener('keydown', (e) => {
+    // 텍스트 입력(채팅·검색 등) 중이면 게임 단축키(Space·G·R·V·숫자뷰·이동키)를 전부 무시.
+    // preventDefault도 하지 않으므로 입력창에서 Space/화살표 등 정상 타이핑 보장.
+    if (_isTyping()) return;
     if (e.code === 'Space') {
         e.preventDefault();
         fetch('/demo', { method: 'POST' }).catch(() => {});
