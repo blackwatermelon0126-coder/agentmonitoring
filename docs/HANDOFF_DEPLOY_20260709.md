@@ -60,6 +60,7 @@ docker compose -f docker-compose.prod.yml up -d
 | .bat 설치 안내창 | 다운로드 후 대형 매뉴얼(용도·설치 6단계) |
 | AI 버튼 상태 지속 | 새로고침 시 `/api/status` 복원 + 4초 여운 + 3색(회색 미연결/청록 연결/초록 작업중) |
 | 아바타 클릭 모달 | 아바타(머리) 클릭 시 **AI 진행 중이면** 에이전트 활동 모달 자동 오픈(idle이면 기존 선택/드래그) |
+| 펫 쓰다듬기 | 펫 근처(<3.5)에서 클릭 → 아바타 앉아 쓰다듬기(torso 숙임+오른팔 stroke), 펫 **배 까고(belly-up) 재롱**. 멀면 기존 재롱. `_animDogBelly`/`_animCatBelly`·`startPetOrTrick`·`poseSelfPetting` |
 
 ## 4. PC별 에이전트 모니터링 (핵심 신규 아키텍처)
 
@@ -77,11 +78,9 @@ docker compose -f docker-compose.prod.yml up -d
 ## 5. 미완/다음 작업
 
 1. **CI 자동배포 복구** — deploy job이 실제 배포하도록 (2번 참조). 복구 전까지 수동 배포.
-2. **펫(고양이·강아지) 인터랙션** — 요청됨, 미구현. 기존 시스템 존재:
-   - `scene.js` ~2647 "강아지·고양이 패트롤 + 재롱" (클릭 시 `_animDogTrick`/`_animCatTrick`).
-   - 추가 요청: 아바타가 펫 근처에서 클릭 → **앉아서 쓰다듬기**, 펫은 **배 까고(belly-up) 재롱**.
-   - 필요: 근접 체크 + 아바타 앉기/쓰다듬 포즈(`updatePersonAnimation` 'sitting') + `_animDogBelly`/`_animCatBelly` 신규.
+2. ~~펫 인터랙션~~ **완료(2026-07-09)** — 근접 클릭 시 아바타 쓰다듬기 + 펫 배까기 구현됨.
 3. 접근/1인칭 뷰 카메라 거리·감도 사용자 튜닝 여지.
+4. (튜닝 여지) 펫 belly-up 롤 축이 아바타 facing에 따라 완벽하진 않음(다리 버둥+꼬리로 커버). 필요 시 로컬 장축 롤로 정교화.
 
 ## 6. 자격증명·주의
 - 서버 비번은 세션 한정. `deploy/ssl/` 커밋 금지(`.gitignore` 등록됨).

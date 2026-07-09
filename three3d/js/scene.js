@@ -2673,6 +2673,10 @@ const catState = {
     pickMeshes: [], bodyMesh: null,
 };
 
+// 아바타 쓰다듬기 상태 — 펫 근처에서 클릭 시 아바타가 앉아 쓰다듬는 동안 유지
+let _pettingUntil = 0;      // ms(performance.now 기준) 종료 시각
+let _pettingAvId  = null;   // 쓰다듬는 아바타 personId
+
 // 강아지 초기 위치 → 첫 웨이포인트(사무실)
 dog.group.position.set(ANIMAL_PATROL_WPS[0].x, 0, ANIMAL_PATROL_WPS[0].z);
 
@@ -2749,8 +2753,69 @@ function _animCatTrick(t, elapsed) {
     }
 }
 
+/** 강아지 배 까고 재롱 — 등으로 눕기 → 네 발 버둥·꼬리흔들·좌우 뒹굴 → 일어나기 (0~3.0s) */
+function _animDogBelly(t, elapsed) {
+    const DUR = 3.0;
+    if (t < 0.4) {                                   // 눕기(등으로 구르기)
+        const p = t / 0.4;
+        dog.group.rotation.x = p * (Math.PI * 0.9);
+        dog.group.position.y = p * 0.1;
+    } else if (t < DUR - 0.4) {                      // 배 까고 버둥
+        dog.group.rotation.x = Math.PI * 0.9;
+        dog.group.rotation.z = Math.sin(elapsed * 6) * 0.2;
+        dog.group.position.y = 0.1 + Math.abs(Math.sin(elapsed * 5)) * 0.03;
+        dog.legs.forEach((leg, i) => { leg.rotation.x = Math.sin(elapsed * 13 + i * 1.3) * 0.9; });
+        dog.tail.rotation.y = Math.sin(elapsed * 20) * 1.2;
+    } else {                                         // 일어나기
+        const p = (t - (DUR - 0.4)) / 0.4;
+        dog.group.rotation.x = Math.PI * 0.9 * (1 - p);
+        dog.group.rotation.z = 0;
+        dog.group.position.y = 0.1 * (1 - p);
+    }
+}
+
+/** 고양이 배 까고 재롱 — 등으로 눕기 → 좌우 뒹굴 → 일어나기 (0~3.0s) */
+function _animCatBelly(t, elapsed) {
+    const DUR = 3.0;
+    if (t < 0.4) {
+        const p = t / 0.4;
+        sleepingCat.rotation.x = p * (Math.PI * 0.85);
+        sleepingCat.position.y = p * 0.08;
+    } else if (t < DUR - 0.4) {
+        sleepingCat.rotation.x = Math.PI * 0.85;
+        sleepingCat.rotation.z = Math.sin(elapsed * 7) * 0.22;
+        sleepingCat.position.y = 0.08 + Math.abs(Math.sin(elapsed * 6)) * 0.03;
+    } else {
+        const p = (t - (DUR - 0.4)) / 0.4;
+        sleepingCat.rotation.x = Math.PI * 0.85 * (1 - p);
+        sleepingCat.rotation.z = 0;
+        sleepingCat.position.y = 0.08 * (1 - p);
+    }
+}
+
 /** 강아지·고양이 공통 패트롤 업데이트 — animate() 루프에서 매 프레임 호출 */
 function updateAnimalPatrol(state, group, speed, elapsed, delta, isdog) {
+
+    // ── 배 까고 재롱 상태(쓰다듬기 트리거) ──
+    if (state.state === 'bellyup') {
+        state.trickT += delta;
+        if (isdog) _animDogBelly(state.trickT, elapsed);
+        else       _animCatBelly(state.trickT, elapsed);
+        if (state.trickT > 3.0) {
+            state.state = 'idle';
+            state.timer = 1.0 + Math.random() * 1.5;
+            state.trickT = 0;
+            if (isdog) {
+                dog.group.rotation.x = 0; dog.group.rotation.z = 0; dog.group.position.y = 0;
+                dog.legs.forEach(l => { l.rotation.x = 0; });
+                dog.tail.rotation.z = -0.7; dog.tail.rotation.y = 0;
+            } else {
+                sleepingCat.rotation.x = 0; sleepingCat.rotation.z = 0; sleepingCat.position.y = 0;
+                if (catState.bodyMesh) catState.bodyMesh.rotation.z = Math.PI / 2;
+            }
+        }
+        return;
+    }
 
     // ── 재롱 상태 ──
     if (state.state === 'trick') {
@@ -3404,6 +3469,54 @@ function trySelfJump() {
     _airborne = true;
 }
 
+/** 펫 클릭 처리: 내 아바타가 가까우면 앉아 쓰다듬기 + 펫 배까기, 멀면 기존 재롱. */
+function startPetOrTrick(anType) {
+    const isDog = anType === 'dog';
+    const state = isDog ? dogState : catState;
+    const petGroup = isDog ? dog.group : sleepingCat;
+    if (state.state === 'bellyup' || state.state === 'trick') return;   // 이미 연출 중
+
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    let near = false;
+    if (av) {
+        const pw = new THREE.Vector3(); petGroup.getWorldPosition(pw);
+        const aw = new THREE.Vector3(); av.group.getWorldPosition(aw);
+        near = pw.distanceTo(aw) < 3.5;             // 좌표계 무관(월드 기준)
+        if (near) {
+            av.group.rotation.y = Math.atan2(pw.x - aw.x, pw.z - aw.z);   // 펫을 바라봄(+z 정면)
+            _pettingAvId  = myPersonId;
+            _pettingUntil = performance.now() + 3000;
+            showSelectToast(isDog ? '🐶 강아지를 쓰다듬는다…' : '🐱 고양이를 쓰다듬는다…');
+        }
+    }
+    state.state = near ? 'bellyup' : 'trick';       // 근처=배까기, 멀리=기존 재롱
+    state.trickT = 0;
+}
+
+/** 쓰다듬는 동안 아바타 포즈(앞으로 숙여 오른팔 stroke). */
+function poseSelfPetting(walkAv, elapsed) {
+    const stroke = Math.sin(elapsed * 6);
+    const po = walkAv.personObj;
+    if (po && po.legL) {                            // 상세 휴먼
+        if (po.torso) po.torso.rotation.x = 0.55;
+        if (po.armR && po.armR.shoulder) po.armR.shoulder.rotation.x = 1.1 + stroke * 0.25;
+        if (po.armR && po.armR.elbow) po.armR.elbow.rotation.x = -0.3;
+    } else {                                        // 수박/부리부리몬
+        if (!walkAv._wl) { walkAv._wl = {}; walkAv.group.traverse(o => { if (o.userData.walkLimbType) walkAv._wl[o.userData.walkLimbType] = o; }); }
+        if (walkAv._wl.armR) walkAv._wl.armR.rotation.x = 1.2 + stroke * 0.3;
+    }
+}
+/** 쓰다듬기 종료 시 포즈 복원. */
+function resetSelfPettingPose(walkAv) {
+    const po = walkAv.personObj;
+    if (po) {
+        if (po.torso) po.torso.rotation.x = 0;
+        if (po.armR && po.armR.shoulder) po.armR.shoulder.rotation.x = 0;
+        if (po.armR && po.armR.elbow) po.armR.elbow.rotation.x = 0;
+    }
+    if (walkAv._wl && walkAv._wl.armR) walkAv._wl.armR.rotation.x = 0;
+}
+
 /**
  * 접근/1인칭 뷰에서 매 프레임 카메라를 본인 아바타에 맞춰 배치.
  * 타워 모드거나 본인 아바타가 없으면 아무것도 안 함(OrbitControls 자유).
@@ -3533,6 +3646,16 @@ function animate() {
     if (myPersonId) {
         const walkAv = personAvatarMap.get(myPersonId);
         if (walkAv) {
+          // 펫 쓰다듬기 중이면 걷기/idle 대신 쓰다듬기 포즈
+          const _pet = _pettingAvId === myPersonId && performance.now() < _pettingUntil;
+          if (_pet || _pettingAvId === myPersonId) {
+            if (_pet) {
+                poseSelfPetting(walkAv, elapsed);
+            } else {
+                resetSelfPettingPose(walkAv);   // 방금 종료 → 복원 1회
+                _pettingAvId = null; _pettingUntil = 0;
+            }
+          } else {
             const isWalking = keysDown.size > 0 && !_isTyping();
             if (walkAv.personObj && walkAv.personObj.legL) {
                 // DetailedPerson — 기존 updatePersonAnimation 활용
@@ -3558,6 +3681,7 @@ function animate() {
                     if (wl.legR) wl.legR.rotation.x *= 0.85;
                 }
             }
+          }
         }
     }
 
@@ -5782,14 +5906,12 @@ function updatePersonLabels() {
         toNdc(ev);
         raycaster.setFromCamera(ndc, camera);
 
-        // 동물 클릭 우선 확인 (재롱 트리거)
+        // 동물 클릭 우선 확인 (근처면 쓰다듬기+배까기, 아니면 재롱)
         const animalMeshes = [...dogState.pickMeshes, ...catState.pickMeshes];
         if (animalMeshes.length > 0) {
             const animalHits = raycaster.intersectObjects(animalMeshes);
             if (animalHits.length > 0) {
-                const anType = animalHits[0].object.userData.animalType;
-                if (anType === 'dog' && dogState.state !== 'trick') { dogState.state = 'trick'; dogState.trickT = 0; }
-                else if (anType === 'cat' && catState.state !== 'trick') { catState.state = 'trick'; catState.trickT = 0; }
+                startPetOrTrick(animalHits[0].object.userData.animalType);
                 return;
             }
         }
