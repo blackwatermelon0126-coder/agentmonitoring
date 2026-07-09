@@ -3290,6 +3290,9 @@ let ROLE_COLOR = {};
 // avatarAgents: 이메일(소문자) → { role: {status, action, detail, tool, lastUpdate} }
 //   각 PC의 Claude Code 훅이 sessionId=이메일로 보낸 상태를 사용자별로 누적.
 const avatarAgents = new Map();
+// avatarConn: 이메일 → { connected:true, lastWorkingAt:ms } — 버튼 색(연결/작업중/여운) 계산용
+const avatarConn = new Map();
+const AI_WORK_LINGER_MS = 4000;   // 마지막 working 이후 초록 유지 시간(짧은 작업 가시성)
 let orgUsersByEmail = null;       // /api/org-users 캐시(Map: email → {displayName, jobTitle})
 let _openInfoPanel = null;        // 현재 열린 팝업 { kind:'ai'|'user', email } 추적(라이브 갱신용)
 
@@ -4136,7 +4139,13 @@ function renderAiPanel(email, name) {
             <span style="color:${working ? '#e6f5ff' : '#7a8aa5'}; word-break:break-all; flex:1;">${_esc(action)}</span>
         </div>`;
     }
+    const conn = avatarConn.get((email || '').toLowerCase());
+    const working = conn && (Date.now() - conn.lastWorkingAt < AI_WORK_LINGER_MS);
+    const connLine = conn && conn.connected
+        ? `<div style="font-size:11px; margin:2px 0 8px; color:${working ? '#39ff14' : '#29b6f6'};">${working ? '🟢 작업 중' : '🔵 연결됨 · 대기'}</div>`
+        : `<div style="font-size:11px; margin:2px 0 8px; color:#7a8aa5;">⚪ 미연결</div>`;
     card.innerHTML = _infoHeader(`🤖 ${_esc(name || email || '사용자')} — AI 진행 현황`) +
+        connLine +
         `<div style="margin-top:6px;">${rows}</div>` +
         (roles ? '' : `<div style="color:#7a8aa5; font-size:11px; margin-top:12px; line-height:1.6;">이 사용자의 Claude Code 훅이 아직 서버로 연결되지 않았습니다.<br>아래 <b>내 PC 연결 설정</b>으로 훅을 등록하면 실시간 표시됩니다.</div>`) +
         `<button id="ai-setup-btn" style="margin-top:14px; width:100%; background:#2F6FED; color:#fff; border:none; border-radius:8px; padding:9px; font-family:monospace; font-size:12px; font-weight:bold; cursor:pointer;">⚙ 내 PC 연결 설정</button>` +
@@ -4369,19 +4378,68 @@ function applyAgentUpdate(sessionId, role, state) {
     if (!email || email === 'default') return;   // default 세션은 기존 하단 패널 담당
     if (!avatarAgents.has(email)) avatarAgents.set(email, {});
     avatarAgents.get(email)[role] = state;
-    // 해당 아바타 AI 버튼 강조(작업 중이면 초록 글로우)
-    const av = [...personAvatarMap.values()].find(a => a.email === email);
-    if (av && av.btnsEl && av.btnsEl._aiBtn) {
-        const roles = avatarAgents.get(email);
-        const anyWorking = Object.values(roles).some(s => s && s.status === 'working');
-        av.btnsEl._aiBtn.style.background = anyWorking ? '#1f8a3b' : '#2F6FED';
-        av.btnsEl._aiBtn.style.boxShadow = anyWorking ? '0 0 10px #39ff14, 0 2px 6px rgba(0,0,0,0.4)' : '0 2px 6px rgba(0,0,0,0.4)';
-    }
+    // 연결 상태 갱신: 한 번이라도 이벤트 오면 connected, working이면 여운 타이머 리셋
+    const conn = avatarConn.get(email) || { connected: true, lastWorkingAt: 0 };
+    conn.connected = true;
+    if (state && state.status === 'working') conn.lastWorkingAt = Date.now();
+    avatarConn.set(email, conn);
+    refreshAiButton(email);
     // 열린 AI 패널이 이 사용자면 즉시 갱신
     if (_openInfoPanel && _openInfoPanel.kind === 'ai' && _openInfoPanel.email === email) {
+        const av = [...personAvatarMap.values()].find(a => a.email === email);
         renderAiPanel(email, av && av.displayName);
     }
 }
+
+/** 이메일에 해당하는 아바타 AI 버튼 색 갱신: 작업중(초록·여운) → 연결됨(파랑) → 미연결(기본). */
+function refreshAiButton(email) {
+    const av = [...personAvatarMap.values()].find(a => a.email === email);
+    if (!av || !av.btnsEl || !av.btnsEl._aiBtn) return;
+    const btn = av.btnsEl._aiBtn;
+    const conn = avatarConn.get(email);
+    const working = conn && (Date.now() - conn.lastWorkingAt < AI_WORK_LINGER_MS);
+    if (working) {                          // 작업 중 — 초록 글로우
+        btn.style.background = '#1f8a3b';
+        btn.style.boxShadow = '0 0 10px #39ff14, 0 2px 6px rgba(0,0,0,0.4)';
+        btn.textContent = '🤖 AI ●';
+    } else if (conn && conn.connected) {    // 연결됨(대기) — 청록
+        btn.style.background = '#1d6fa5';
+        btn.style.boxShadow = '0 0 6px #29b6f6aa, 0 2px 6px rgba(0,0,0,0.4)';
+        btn.textContent = '🤖 AI';
+    } else {                                // 미연결 — 기본 파랑
+        btn.style.background = '#2F6FED';
+        btn.style.boxShadow = '0 2px 6px rgba(0,0,0,0.4)';
+        btn.textContent = '🤖 AI';
+    }
+}
+
+/** 서버에서 현재 세션 상태를 받아 복원(새로고침/재접속 시 버튼·패널 유지). */
+async function restoreAgentStates() {
+    try {
+        const st = await fetch('/api/status').then(r => r.json());
+        const sess = st && st.sessions;
+        if (!sess) return;
+        for (const sid of Object.keys(sess)) {
+            const email = sid.toLowerCase();
+            if (!email || email === 'default') continue;
+            const roles = sess[sid];
+            avatarAgents.set(email, { ...roles });
+            const conn = { connected: true, lastWorkingAt: 0 };
+            for (const r of Object.keys(roles)) {
+                if (roles[r] && roles[r].status === 'working') conn.lastWorkingAt = Date.now();
+            }
+            avatarConn.set(email, conn);
+        }
+        // 아바타가 이미 있으면 버튼 즉시 갱신(없으면 1초 주기 타이머가 처리)
+        avatarConn.forEach((_, email) => refreshAiButton(email));
+    } catch { /* noop */ }
+}
+
+// 1초 주기: 작업 여운 만료 → 연결됨 색으로 자연 감쇠. 늦게 생성된 아바타 버튼도 반영.
+setInterval(() => { avatarConn.forEach((_, email) => refreshAiButton(email)); }, 1000);
+
+// 페이지 로드 시 서버 세션 상태 복원(새로고침해도 연결/작업 상태 유지).
+restoreAgentStates();
 
 // ============================================================
 // 🏝️ 야외 휴양지 회의실 3곳 (보라카이 · 괌 · 오키나와)
@@ -6232,6 +6290,7 @@ function connectWS() {
         // P3: 재접속 시에도(로그인 상태 유지 중이면) 즉시 세션 신분 재등록
         const acct = getAccount();
         if (acct) _sendUserJoin(acct);
+        restoreAgentStates();   // 재접속 시 서버 세션 상태 복원(버튼/패널 유지)
     };
     _ws.onmessage = (e) => {
         const d = JSON.parse(e.data);
