@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createFactory, updateFactory } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
-import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, updatePersonAnimation, createICharacter, createWatermelonCharacter, createBuriburimonCharacter } from './character.js';
+import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, updatePersonAnimation, createICharacter, createWatermelonCharacter, createBuriburimonCharacter, createPenguinCharacter } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
 import { initLunchGame, triggerLunchGame } from './lunchgame.js';
 import { initChatPanel, openChat, handleTeamsNotification, isChatOpen } from './chat-panel.js';
@@ -4425,6 +4425,15 @@ function openMonitorSetupModal(prefillEmail) {
             <option value="pm">pm</option>
             <option value="leader">leader</option>
         </select>
+        <label style="display:block; margin:10px 0 4px; color:#9fb3d1; font-size:11px;">Claude 모델 (선택 시 ANTHROPIC_MODEL 로 반영 · 재시작 후 적용)</label>
+        <select id="ms-model" style="width:100%; box-sizing:border-box; background:#0e1526; color:#e6f0ff; border:1px solid #2a3550; border-radius:7px; padding:8px 10px; font-family:monospace; font-size:12px;">
+            <option value="">기본값(설정 안 함)</option>
+            <option value="claude-opus-4-8">Claude Opus 4.8 (claude-opus-4-8)</option>
+            <option value="claude-opus-4-7">Claude Opus 4.7 (claude-opus-4-7)</option>
+            <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (claude-sonnet-4-6)</option>
+            <option value="claude-haiku-4-5">Claude Haiku 4.5 (claude-haiku-4-5)</option>
+            <option value="claude-fable-5">Claude Fable 5 (claude-fable-5)</option>
+        </select>
         <label style="display:block; margin:12px 0 4px; color:#9fb3d1; font-size:11px;">생성된 설정 명령 (PowerShell)</label>
         <textarea id="ms-cmd" readonly rows="4" style="width:100%; box-sizing:border-box; background:#0a1120; color:#8affc0; border:1px solid #2a3550; border-radius:7px; padding:8px 10px; font-family:monospace; font-size:11px; resize:none;"></textarea>
         <div style="display:flex; gap:8px; margin-top:12px;">
@@ -4440,16 +4449,22 @@ function openMonitorSetupModal(prefillEmail) {
         const url = $('#ms-url').value.trim();
         const usr = $('#ms-user').value.trim();
         const role = $('#ms-role').value;
-        return `setx AGENT_MONITOR_URL  "${url}"\nsetx AGENT_MONITOR_USER "${usr}"\nsetx CLAUDE_ROLE        "${role}"`;
+        const model = $('#ms-model').value;
+        let cmd = `setx AGENT_MONITOR_URL  "${url}"\nsetx AGENT_MONITOR_USER "${usr}"\nsetx CLAUDE_ROLE        "${role}"`;
+        if (model) cmd += `\nsetx ANTHROPIC_MODEL    "${model}"`;   // Claude Code 기본 모델 선택
+        return cmd;
     };
     const buildBat = () => {
         const url = $('#ms-url').value.trim();
         const usr = $('#ms-user').value.trim();
         const role = $('#ms-role').value;
-        return `@echo off\r\nchcp 65001 >nul\r\nsetx AGENT_MONITOR_URL "${url}"\r\nsetx AGENT_MONITOR_USER "${usr}"\r\nsetx CLAUDE_ROLE "${role}"\r\necho.\r\necho [완료] 새 터미널에서 Claude Code를 재시작하세요.\r\npause\r\n`;
+        const model = $('#ms-model').value;
+        const modelLine = model ? `setx ANTHROPIC_MODEL "${model}"\r\n` : '';
+        return `@echo off\r\nchcp 65001 >nul\r\nsetx AGENT_MONITOR_URL "${url}"\r\nsetx AGENT_MONITOR_USER "${usr}"\r\nsetx CLAUDE_ROLE "${role}"\r\n${modelLine}echo.\r\necho [완료] 새 터미널에서 Claude Code를 재시작하세요.\r\npause\r\n`;
     };
     const refresh = () => { $('#ms-cmd').value = buildCmd(); };
-    ['#ms-url', '#ms-user', '#ms-role'].forEach(sel => $(sel).addEventListener('input', refresh));
+    ['#ms-url', '#ms-user', '#ms-role', '#ms-model'].forEach(sel => $(sel).addEventListener('input', refresh));
+    $('#ms-model').addEventListener('change', refresh);
     refresh();
 
     $('#ms-copy').onclick = () => {
@@ -5374,12 +5389,19 @@ function isBuriburimon(person) {
     return e.startsWith('106079@ctr') || e.includes('subi.kim') || n.includes('김수비') || n.includes('subi kim');
 }
 
+// 특정 사용자 → 핑쿠(펭귄) 캐릭터 (요청: 106078@ctr.co.kr).
+function isPingu(person) {
+    const e = (person.email || '').toLowerCase().trim();
+    const n = (person.name || '').toLowerCase().trim();
+    return e.startsWith('106078@ctr') || n.includes('핑쿠') || n.includes('pingu');
+}
+
 function createPersonAvatar(person) {
     const color = parseInt((person.color || '#4A90E2').replace('#', ''), 16);
 
     // 상세 캐릭터 모델 — person.id 해시로 외형(피부·머리색·헤어스타일·성별)을 결정적 다양화.
     // 같은 id 는 항상 같은 외형 → 새로고침·재접속에도 일관. 셔츠색만 person.color 반영(바지·신발 고정).
-    // 특별 캐릭터: ZEPHONI='i' 문자 / 102450@CTR.CO.KR=검은수박 / 김수비=부리부리몬 / 나머지=상세 휴먼.
+    // 특별 캐릭터: ZEPHONI='i' 문자 / 102450@CTR.CO.KR=검은수박 / 김수비=부리부리몬 / 106078@CTR.CO.KR=핑쿠(펭귄) / 나머지=상세 휴먼.
     const isZephoni = (person.name || '').trim().toUpperCase() === 'ZEPHONI';
     const personObj = isZephoni
         ? createICharacter(color)
@@ -5387,7 +5409,9 @@ function createPersonAvatar(person) {
             ? createWatermelonCharacter()
             : isBuriburimon(person)
                 ? createBuriburimonCharacter()
-                : createDetailedPerson(traitsFromSeed(person.id, color));
+                : isPingu(person)
+                    ? createPenguinCharacter()
+                    : createDetailedPerson(traitsFromSeed(person.id, color));
     const group = personObj.group;
     group.scale.set(0.9, 0.9, 0.9);   // 계단 에이전트와 동일 스케일
 

@@ -330,6 +330,105 @@ export function createBuriburimonCharacter() {
     return { group };
 }
 
+/**
+ * "핑쿠" 펭귄 캐릭터 (특정 사용자 전용 — 106078@ctr.co.kr).
+ * 검은 몸통·흰 배·주황 부리와 물갈퀴 발. 날개=armL/armR, 다리=legL/legR 로 태그해
+ * 공용 걷기 애니메이션(팔다리 스윙 = 펭귄 뒤뚱걸음)을 그대로 재사용한다.
+ * createDetailedPerson 과 동일하게 { group } 을 반환한다.
+ *
+ * @returns {{ group: THREE.Group }}
+ */
+export function createPenguinCharacter() {
+    const group = new THREE.Group();
+    const BLACK = 0x1b1b22;   // 등·머리
+    const WHITE = 0xfdfdfd;   // 배·얼굴
+    const ORANGE = 0xf6a01a;  // 부리·발
+    const blackMat  = new THREE.MeshStandardMaterial({ color: BLACK,  roughness: 0.55 });
+    const whiteMat  = new THREE.MeshStandardMaterial({ color: WHITE,  roughness: 0.7 });
+    const orangeMat = new THREE.MeshStandardMaterial({ color: ORANGE, roughness: 0.5 });
+    const eyeWhite  = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    const eyeBlack  = new THREE.MeshBasicMaterial({ color: 0x111111 });
+
+    // 몸통 = 세로로 긴 검은 달걀 (바닥 근처까지 내려와 다리가 짧아 보이게)
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.5, 26, 22), blackMat);
+    body.scale.set(0.92, 1.25, 0.85);
+    body.position.y = 1.05;
+    body.castShadow = true;
+    group.add(body);
+
+    // 흰 배 (앞면 +z 에 살짝 튀어나온 흰 타원)
+    const belly = new THREE.Mesh(new THREE.SphereGeometry(0.5, 24, 20), whiteMat);
+    belly.scale.set(0.7, 1.05, 0.55);
+    belly.position.set(0, 1.02, 0.16);
+    body.parent && group.add(belly);
+
+    // 머리 = 검은 구 (몸통 위)
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.34, 24, 20), blackMat);
+    head.position.y = 1.78;
+    head.castShadow = true;
+    group.add(head);
+
+    // 흰 얼굴 패치 (앞면)
+    const face = new THREE.Mesh(new THREE.SphereGeometry(0.3, 20, 18), whiteMat);
+    face.scale.set(0.85, 0.9, 0.6);
+    face.position.set(0, -0.02, 0.14);
+    head.add(face);
+
+    // 눈 (흰자 + 검은자) — 정면
+    function eye(x) {
+        const g = new THREE.Group();
+        const w = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 10), eyeWhite);
+        const p = new THREE.Mesh(new THREE.SphereGeometry(0.03, 8, 8), eyeBlack);
+        p.position.z = 0.045;
+        g.add(w, p);
+        g.position.set(x, 0.08, 0.28);
+        return g;
+    }
+    head.add(eye(-0.12));
+    head.add(eye(0.12));
+
+    // 부리 = 주황 원뿔 (정면 돌출)
+    const beak = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.22, 14), orangeMat);
+    beak.rotation.x = Math.PI / 2;
+    beak.position.set(0, -0.04, 0.34);
+    head.add(beak);
+
+    // 날개(플리퍼) = 납작한 검은 캡슐, 몸통 옆. armL/armR 로 태그 → 걷기 시 앞뒤 스윙(펄럭임).
+    function wing(side) {
+        const g = new THREE.Group();
+        const flip = new THREE.Mesh(new THREE.SphereGeometry(0.16, 14, 10), blackMat);
+        flip.scale.set(0.45, 1.15, 0.5);
+        flip.position.y = -0.28;
+        g.add(flip);
+        g.position.set(side * 0.5, 1.4, 0);
+        g.rotation.z = side * 0.28;               // 살짝 벌린 기본 자세
+        g.userData.walkLimbType = side < 0 ? 'armL' : 'armR';
+        g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        return g;
+    }
+    group.add(wing(-1));
+    group.add(wing(1));
+
+    // 다리 + 물갈퀴 발 = 짧은 주황. legL/legR 로 태그 → 걷기 시 앞뒤 스윙.
+    function leg(x) {
+        const g = new THREE.Group();
+        const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.42, 10), orangeMat);
+        shin.position.y = 0.28;
+        g.add(shin);
+        const foot = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.06, 0.34), orangeMat);
+        foot.position.set(0, 0.03, 0.08);         // 발끝이 앞(+z)으로
+        g.add(foot);
+        g.position.set(x, 0, 0);
+        g.userData.walkLimbType = x < 0 ? 'legL' : 'legR';
+        g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        return g;
+    }
+    group.add(leg(-0.18));
+    group.add(leg(0.18));
+
+    return { group };
+}
+
 export function createDetailedPerson(traits) {
     const { gender, skinColor, hairColor, shirtColor, pantsColor, shoeColor, hairStyle } = traits;
     const group = new THREE.Group();
