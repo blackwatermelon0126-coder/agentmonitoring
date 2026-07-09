@@ -3286,6 +3286,13 @@ function updateAgentState(role, state) {
 let ROLE_LABEL = {};
 let ROLE_COLOR = {};
 
+// ---- 아바타 머리 위 버튼(🤖 AI / 👤 정보) 데이터 ----
+// avatarAgents: 이메일(소문자) → { role: {status, action, detail, tool, lastUpdate} }
+//   각 PC의 Claude Code 훅이 sessionId=이메일로 보낸 상태를 사용자별로 누적.
+const avatarAgents = new Map();
+let orgUsersByEmail = null;       // /api/org-users 캐시(Map: email → {displayName, jobTitle})
+let _openInfoPanel = null;        // 현재 열린 팝업 { kind:'ai'|'user', email } 추적(라이브 갱신용)
+
 // ============================================
 // 메인 루프
 // ============================================
@@ -4080,6 +4087,146 @@ function worldToScreen(worldPos) {
         x: (v.x * 0.5 + 0.5) * renderer.domElement.clientWidth,
         y: (-(v.y * 0.5) + 0.5) * renderer.domElement.clientHeight,
     };
+}
+
+// ============================================================
+// 아바타 머리 위 버튼(🤖 AI / 👤 정보) + 정보 팝업
+// ============================================================
+function _esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function _infoHeader(t) { return `<div style="font-size:14px; font-weight:bold; border-bottom:1px solid #2a3550; padding-bottom:8px; margin-bottom:6px;">${t}</div>`; }
+function _infoCloseBtn() { return `<button id="avatar-info-close" style="margin-top:14px; width:100%; background:#26324d; color:#cfe0ff; border:none; border-radius:8px; padding:8px; font-family:monospace; font-size:12px; cursor:pointer;">닫기</button>`; }
+function _wireInfoClose(card) { const b = card.querySelector('#avatar-info-close'); if (b) b.onclick = closeInfoPopup; }
+
+function getInfoPopup() {
+    let ov = document.getElementById('avatar-info-overlay');
+    if (ov) return ov;
+    ov = document.createElement('div');
+    ov.id = 'avatar-info-overlay';
+    ov.style.cssText = `position:fixed; inset:0; z-index:1200; display:none; align-items:center; justify-content:center; background:rgba(5,8,15,0.45);`;
+    const card = document.createElement('div');
+    card.id = 'avatar-info-card';
+    card.style.cssText = `min-width:300px; max-width:90vw; max-height:80vh; overflow:auto; background:rgba(12,18,30,0.97); border:1px solid #2a3550; border-radius:14px; padding:18px 20px; font-family:monospace; color:#fff; box-shadow:0 12px 48px rgba(0,0,0,0.6);`;
+    ov.appendChild(card);
+    document.body.appendChild(ov);
+    ov.addEventListener('click', (e) => { if (e.target === ov) closeInfoPopup(); });
+    return ov;
+}
+function closeInfoPopup() {
+    _openInfoPanel = null;
+    const ov = document.getElementById('avatar-info-overlay');
+    if (ov) ov.style.display = 'none';
+}
+
+/** AI 진행 현황 패널 렌더 (역할별 상태). */
+function renderAiPanel(email, name) {
+    const card = document.getElementById('avatar-info-card');
+    if (!card) return;
+    const roles = avatarAgents.get((email || '').toLowerCase());
+    const order = ['pm', 'leader', 'developer', 'devops', 'qa'];
+    let rows = '';
+    for (const r of order) {
+        const st = roles && roles[r];
+        const label = ROLE_LABEL[r] || r.toUpperCase();
+        const color = ROLE_COLOR[r] || '#8892a6';
+        const working = !!(st && st.status === 'working');
+        const action = st ? (st.detail || st.action || (working ? '작업 중' : '대기 중')) : '—';
+        rows += `<div style="display:flex; gap:8px; align-items:flex-start; margin:7px 0;">
+            <span style="width:8px;height:8px;border-radius:50%;margin-top:5px;flex:none;background:${working ? '#39ff14' : '#4a5570'};${working ? 'box-shadow:0 0 7px #39ff14;' : ''}"></span>
+            <span style="color:${color}; font-weight:bold; min-width:48px;">${label}</span>
+            <span style="color:${working ? '#e6f5ff' : '#7a8aa5'}; word-break:break-all; flex:1;">${_esc(action)}</span>
+        </div>`;
+    }
+    card.innerHTML = _infoHeader(`🤖 ${_esc(name || email || '사용자')} — AI 진행 현황`) +
+        `<div style="margin-top:6px;">${rows}</div>` +
+        (roles ? '' : `<div style="color:#7a8aa5; font-size:11px; margin-top:12px; line-height:1.6;">이 사용자의 Claude Code 훅이 아직 서버로 연결되지 않았습니다.<br>각 PC에 훅을 설정하면 실시간 표시됩니다.</div>`) +
+        _infoCloseBtn();
+    _wireInfoClose(card);
+}
+
+/** /api/org-users 1회 로드(이메일→조직정보 캐시). */
+async function ensureOrgUsers() {
+    if (orgUsersByEmail) return;
+    orgUsersByEmail = new Map();
+    try {
+        const list = await fetch('/api/org-users').then(r => r.json());
+        (Array.isArray(list) ? list : []).forEach(u => {
+            if (u.email) orgUsersByEmail.set(u.email.toLowerCase(), { displayName: u.displayName || '', jobTitle: u.jobTitle || '' });
+        });
+    } catch { /* 실패 시 빈 캐시(로컬 정보로 폴백) */ }
+}
+
+/** Azure 조직 사용자 정보 패널 렌더. */
+async function renderUserPanel(email, name) {
+    const card = document.getElementById('avatar-info-card');
+    if (!card) return;
+    card.innerHTML = _infoHeader('👤 사용자 정보') + `<div style="color:#9fb3d1;">불러오는 중…</div>`;
+    await ensureOrgUsers();
+    if (!_openInfoPanel || _openInfoPanel.kind !== 'user' || _openInfoPanel.email !== (email || '').toLowerCase()) return; // 그새 닫힘/전환
+    const key = (email || '').toLowerCase();
+    const info = orgUsersByEmail && orgUsersByEmail.get(key);
+    const av = [...personAvatarMap.values()].find(a => a.email === key);
+    const dn = (info && info.displayName) || name || (av && av.displayName) || email || '사용자';
+    const job = (info && info.jobTitle) || (av && av.department) || '';
+    card.innerHTML = _infoHeader(`👤 ${_esc(dn)}`) +
+        `<div style="margin-top:8px; line-height:2.0; font-size:13px;">
+            <div><span style="color:#7a8aa5; display:inline-block; width:56px;">이메일</span>${_esc(email || '-')}</div>
+            <div><span style="color:#7a8aa5; display:inline-block; width:56px;">직책</span>${_esc(job || '-')}</div>
+            <div><span style="color:#7a8aa5; display:inline-block; width:56px;">조직</span>FORMATIONLABS · Azure AD</div>
+        </div>` +
+        (info ? '' : `<div style="color:#7a8aa5; font-size:11px; margin-top:12px;">Azure 조직 디렉터리에서 추가 정보를 찾지 못해 로컬 정보를 표시합니다.</div>`) +
+        _infoCloseBtn();
+    _wireInfoClose(card);
+}
+
+function openAiPanel(email, name) {
+    _openInfoPanel = { kind: 'ai', email: (email || '').toLowerCase() };
+    getInfoPopup().style.display = 'flex';
+    renderAiPanel(email, name);
+}
+function openUserPanel(email, name) {
+    _openInfoPanel = { kind: 'user', email: (email || '').toLowerCase() };
+    getInfoPopup().style.display = 'flex';
+    renderUserPanel(email, name);
+}
+
+/** 아바타 머리 위 버튼 묶음(🤖 AI / 👤 정보) 생성. personId로 클릭 시 최신 아바타 조회. */
+function makeAvatarButtons(personId) {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = `position:absolute; transform:translateX(-50%); display:flex; gap:4px; pointer-events:auto; z-index:60;`;
+    const mk = (txt, bg) => {
+        const b = document.createElement('button');
+        b.textContent = txt;
+        b.style.cssText = `background:${bg}; color:#fff; border:none; border-radius:6px; padding:2px 7px; font-family:monospace; font-size:10px; font-weight:bold; cursor:pointer; white-space:nowrap; box-shadow:0 2px 6px rgba(0,0,0,0.4);`;
+        return b;
+    };
+    const aiBtn = mk('🤖 AI', '#2F6FED');
+    const userBtn = mk('👤 정보', '#6b7fa6');
+    aiBtn.onclick = (e) => { e.stopPropagation(); const av = personAvatarMap.get(personId); if (av) openAiPanel(av.email, av.displayName); };
+    userBtn.onclick = (e) => { e.stopPropagation(); const av = personAvatarMap.get(personId); if (av) openUserPanel(av.email, av.displayName); };
+    wrap.appendChild(aiBtn); wrap.appendChild(userBtn);
+    wrap._aiBtn = aiBtn;
+    document.body.appendChild(wrap);
+    return wrap;
+}
+
+/** WS agent-update 수신 시 사용자별 상태 누적 + 버튼 강조 + 열린 패널 라이브 갱신. */
+function applyAgentUpdate(sessionId, role, state) {
+    const email = (sessionId || '').toLowerCase();
+    if (!email || email === 'default') return;   // default 세션은 기존 하단 패널 담당
+    if (!avatarAgents.has(email)) avatarAgents.set(email, {});
+    avatarAgents.get(email)[role] = state;
+    // 해당 아바타 AI 버튼 강조(작업 중이면 초록 글로우)
+    const av = [...personAvatarMap.values()].find(a => a.email === email);
+    if (av && av.btnsEl && av.btnsEl._aiBtn) {
+        const roles = avatarAgents.get(email);
+        const anyWorking = Object.values(roles).some(s => s && s.status === 'working');
+        av.btnsEl._aiBtn.style.background = anyWorking ? '#1f8a3b' : '#2F6FED';
+        av.btnsEl._aiBtn.style.boxShadow = anyWorking ? '0 0 10px #39ff14, 0 2px 6px rgba(0,0,0,0.4)' : '0 2px 6px rgba(0,0,0,0.4)';
+    }
+    // 열린 AI 패널이 이 사용자면 즉시 갱신
+    if (_openInfoPanel && _openInfoPanel.kind === 'ai' && _openInfoPanel.email === email) {
+        renderAiPanel(email, av && av.displayName);
+    }
 }
 
 // ============================================================
@@ -4886,8 +5033,10 @@ function createPersonAvatar(person) {
     // P3: WS 세션 신분 가시성 매칭용 이메일 키(소문자 정규화)
     const _emailKey = (person.email || '').toLowerCase();
 
+    const btnsEl = makeAvatarButtons(person.id);   // 머리 위 🤖 AI / 👤 정보 버튼
+
     personAvatarMap.set(person.id, { group, personObj, pickMeshes, badge, labelEl, bubbleEl: null, unreadCount: 0,
-        meetingEl: null, preMeetingPos: null, meetingSeatIdx: -1, meetingJoinUrl: null,
+        meetingEl: null, preMeetingPos: null, meetingSeatIdx: -1, meetingJoinUrl: null, btnsEl,
         displayName: person.name, shirtColorHex: person.color || '#4A90E2',
         department: person.department || null, email: _emailKey });
 
@@ -4915,6 +5064,7 @@ function syncPersonAvatars(people) {
             av.labelEl.remove();
             if (av.bubbleEl) av.bubbleEl.remove();
             if (av.meetingEl) { av.meetingEl.remove(); }
+            if (av.btnsEl) av.btnsEl.remove();
             if (av.meetingSeatIdx >= 0 && meetingSeats[av.meetingSeatIdx]) {
                 meetingSeats[av.meetingSeatIdx].occupied = false;
             }
@@ -4935,6 +5085,7 @@ function syncPersonAvatars(people) {
             av.labelEl.remove();
             if (av.bubbleEl) av.bubbleEl.remove();
             if (av.meetingEl) av.meetingEl.remove();
+            if (av.btnsEl) av.btnsEl.remove();
             if (av.meetingSeatIdx >= 0 && meetingSeats[av.meetingSeatIdx]) {
                 meetingSeats[av.meetingSeatIdx].occupied = false;
             }
@@ -5109,6 +5260,18 @@ function updatePersonLabels() {
         const s = worldToScreen(above);
         av.labelEl.style.left = `${s.x}px`;
         av.labelEl.style.top  = `${s.y}px`;
+
+        // 머리 위 버튼(🤖 AI / 👤 정보) — 이름 라벨 위쪽. 숨김 상태(오프라인/1인칭 자기몸)는 함께 숨김.
+        if (av.btnsEl) {
+            const hidden = av.labelEl.style.display === 'none' || av.group.visible === false;
+            av.btnsEl.style.display = hidden ? 'none' : 'flex';
+            if (!hidden) {
+                const bp = av.group.position.clone(); bp.y += 2.45;
+                const bs = worldToScreen(bp);
+                av.btnsEl.style.left = `${bs.x}px`;
+                av.btnsEl.style.top  = `${bs.y}px`;
+            }
+        }
 
         if (av.bubbleEl) {
             const bubblePos = av.group.position.clone();
@@ -5924,14 +6087,19 @@ function connectWS() {
                 _lastAgentStatus[r] = s.status;   // 초기 상태는 알림 없이 기록
             });
         } else if (d.type === 'agent-update') {
-            const prev = _lastAgentStatus[d.agent];
-            updateAgentState(d.agent, d.state);
-            const now = d.state && d.state.status;
-            // working → idle 전이 = 에이전트 작업 완료 → OS 알림
-            if (prev === 'working' && now === 'idle') {
-                notify('agent', `ZEPHONI ADK — ${(d.state && d.state.role) || d.agent} 완료`, '에이전트가 작업을 마쳤습니다.', { tag: `agent-${d.agent}` });
+            // 사용자별(sessionId=이메일) 상태 → 아바타 머리 위 🤖 AI 버튼/패널에 반영
+            applyAgentUpdate(d.sessionId, d.agent, d.state);
+            // default 세션은 기존 하단 상태 패널 유지(하위호환)
+            if (!d.sessionId || d.sessionId === 'default') {
+                const prev = _lastAgentStatus[d.agent];
+                updateAgentState(d.agent, d.state);
+                const now = d.state && d.state.status;
+                // working → idle 전이 = 에이전트 작업 완료 → OS 알림
+                if (prev === 'working' && now === 'idle') {
+                    notify('agent', `ZEPHONI ADK — ${(d.state && d.state.role) || d.agent} 완료`, '에이전트가 작업을 마쳤습니다.', { tag: `agent-${d.agent}` });
+                }
+                _lastAgentStatus[d.agent] = now;
             }
-            _lastAgentStatus[d.agent] = now;
         } else if (d.type === 'people-update') {
             syncPersonAvatars(d.people);
         } else if (d.type === 'teams-notification') {

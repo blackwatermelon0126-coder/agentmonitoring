@@ -10,28 +10,53 @@
 
 "use strict";
 const http = require("http");
+const https = require("https");
 const path = require("path");
+const { URL } = require("url");
 
-const SERVER_HOST = process.env.AGENT_MONITOR_HOST || "127.0.0.1";
-const SERVER_PORT = parseInt(process.env.AGENT_MONITOR_PORT || "3300", 10);
+// 전송 대상 결정:
+//   AGENT_MONITOR_URL (예: https://metaoffice.fllab.internal) 우선 →
+//   없으면 AGENT_MONITOR_HOST/PORT (기본 127.0.0.1:3300, 로컬 개발 하위호환).
+// 원격 서버(팀 공유 모니터링)로 보내려면 각 PC에 AGENT_MONITOR_URL 만 설정하면 된다.
+const MONITOR_URL = process.env.AGENT_MONITOR_URL || "";
+let TRANSPORT = http, REQ_HOST = process.env.AGENT_MONITOR_HOST || "127.0.0.1",
+    REQ_PORT = parseInt(process.env.AGENT_MONITOR_PORT || "3300", 10), REQ_PROTO = "http:";
+if (MONITOR_URL) {
+    try {
+        const u = new URL(MONITOR_URL);
+        REQ_PROTO = u.protocol;
+        REQ_HOST  = u.hostname;
+        REQ_PORT  = u.port ? parseInt(u.port, 10) : (u.protocol === "https:" ? 443 : 80);
+        TRANSPORT = u.protocol === "https:" ? https : http;
+    } catch { /* 잘못된 URL → 기본값 유지 */ }
+}
+
 const ROLE = (process.env.CLAUDE_ROLE || "developer").toLowerCase();
+// 사용자 식별자(이메일) — 3D 화면에서 로그인 아바타와 매칭되는 세션 키.
+// 각 PC에 AGENT_MONITOR_USER=본인이메일 로 설정. 없으면 Claude 세션 UUID로 폴백.
+const MONITOR_USER = (process.env.AGENT_MONITOR_USER || "").toLowerCase();
 
 function post(p, body) {
     return new Promise((resolve) => {
         const data = Buffer.from(JSON.stringify(body), "utf-8");
-        const req = http.request({
-            host: SERVER_HOST,
-            port: SERVER_PORT,
+        const req = TRANSPORT.request({
+            host: REQ_HOST,
+            port: REQ_PORT,
             path: p,
             method: "POST",
+            protocol: REQ_PROTO,
             headers: { "Content-Type": "application/json", "Content-Length": data.length },
             timeout: 1500,
+            rejectUnauthorized: false,   // 내부 mkcert 인증서 허용(HTTPS)
         }, (res) => { res.on("data", () => {}); res.on("end", resolve); });
         req.on("error", resolve);
         req.on("timeout", () => { req.destroy(); resolve(); });
         req.write(data); req.end();
     });
 }
+
+/** 세션 키: 사용자 이메일 우선(아바타 매칭) → Claude 세션 UUID 폴백. */
+function sid(evt) { return MONITOR_USER || (evt && evt.session_id) || ""; }
 
 function trim(s, n) {
     if (typeof s !== "string") return "";
@@ -156,7 +181,7 @@ async function main() {
             detail: summary,
             params,
             event,
-            sessionId: evt.session_id || "",
+            sessionId: sid(evt),
         };
         if (event === "PostToolUse") {
             body.result = extractResultSummary(tool, evt.tool_response);
@@ -166,7 +191,8 @@ async function main() {
     }
 
     if (event === "Stop" || event === "SessionEnd" || event === "SubagentStop") {
-        await post("/hook/tool-done", { role: ROLE, allRoles: true });
+        // 이 세션(사용자)의 모든 역할만 idle 전환 — 타 사용자 세션에 영향 없음.
+        await post("/hook/tool-done", { role: ROLE, allRoles: true, sessionId: sid(evt) });
         return;
     }
 
@@ -175,7 +201,7 @@ async function main() {
             tool: event, role: ROLE, status: "working",
             detail: "🟢 세션 시작",
             event,
-            sessionId: evt.session_id || "",
+            sessionId: sid(evt),
         });
         return;
     }
@@ -187,7 +213,7 @@ async function main() {
             detail: prompt ? `💬 ${prompt}` : "프롬프트 처리 중",
             params: { prompt },
             event,
-            sessionId: evt.session_id || "",
+            sessionId: sid(evt),
         });
         return;
     }

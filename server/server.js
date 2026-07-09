@@ -297,8 +297,10 @@ app.post('/hook/tool-done', requireLoopback, (req, res) => {
 
     logger.info({ event: 'tool_done', role, sessionId: sid, ts: Date.now() }, 'tool-done');
 
-    // 대상 세션 결정: allRoles=true 이면 모든 세션의 해당 역할을 idle로 전환
-    const targetSessions = allRoles ? Object.keys(sessions) : [sid];
+    // 대상 세션 결정:
+    //  - sessionId 명시 → 그 세션만 (allRoles=true면 그 세션의 전 역할 idle) : 멀티유저 격리
+    //  - sessionId 없고 allRoles=true → 전 세션 idle (레거시 하위호환)
+    const targetSessions = (allRoles && !sessionId) ? Object.keys(sessions) : [sid];
 
     targetSessions.forEach(targetSid => {
         const sessionRoles = sessions[targetSid];
