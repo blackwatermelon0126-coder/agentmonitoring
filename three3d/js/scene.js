@@ -455,6 +455,9 @@ sign.position.set(0, 3.85, 4.05); scene.add(sign);
 // walkables: 이동 시 발밑으로 레이캐스트해 y를 스냅(계단·슬래브·데크·플랫폼). 없으면 지면 0.
 // seats: 근처에서 Enter로 앉기. elevatorZones: 근처에서 Enter로 층 선택.
 const walkables = [];
+// jumpTargets: 점프/낙하 시 착지할 수 있는 모든 정적 표면(바닥·슬래브·가구 상판 등).
+// 모듈 끝에서 envGroup을 1회 순회해 채운다(아바타는 이후 비동기 추가되므로 자연히 제외됨).
+const jumpTargets = [];
 const seats = [];
 const elevatorZones = [];   // [{ x, z, y, floor }]
 const elevatorPick = [];    // 클릭 시 층 메뉴를 여는 엘리베이터/발판/포털 메쉬
@@ -3301,6 +3304,13 @@ let avatarViewMode = 'tower';
 const _camTmpPos = new THREE.Vector3();
 const _camTmpTgt = new THREE.Vector3();
 
+// ---- 점프/수직 물리 (본인 아바타 전용) ----
+const GRAVITY    = 22;    // 중력 가속도(유닛/s²)
+const JUMP_SPEED = 8;     // 점프 초기 상승 속도 → 최고점 ≈ 1.45유닛(의자·낮은 탁자 착지 가능)
+const STEP_UP    = 0.6;   // 걷다가 오를 수 있는 최대 단차(계단·낮은 발판)
+let _jumpVelY = 0;        // 현재 수직 속도
+let _airborne = false;    // 공중(점프/낙하) 여부
+
 /** 입력 포커스가 텍스트 필드에 있으면 true — 채팅 입력 중 이동 방지 */
 function _isTyping() {
     const el = document.activeElement;
@@ -3326,6 +3336,62 @@ function _saveMyPosition() {
 function _scheduleSaveMyPosition() {
     if (_savePositionTimer) clearTimeout(_savePositionTimer);
     _savePositionTimer = setTimeout(_saveMyPosition, 300);
+}
+
+/**
+ * 본인 아바타 수직 물리(점프·중력·착지) — 매 프레임 호출.
+ * 지상: 발밑 표면(바닥·가구 상판)에 스냅(단차 STEP_UP 이내 오르내림, 가장자리 벗어나면 낙하 시작).
+ * 공중: 중력 적용 후 하강 중 표면에 닿으면 착지. → 점프해서 의자·탁자 위에 올라설 수 있다.
+ */
+function updateSelfVertical(delta, moving) {
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    if (!av || sittingSeat) return;                 // 앉은 상태면 물리 생략
+    // 지상+정지 상태면 레이캐스트 불필요(위치 불변) → 매 프레임 캐스트 방지
+    if (!_airborne && !moving) return;
+    const px = av.group.position.x, pz = av.group.position.z;
+    const feetY = av.group.position.y;
+
+    if (_airborne) {
+        // ── 공중: 중력 → 하강 중 착지 판정 ──
+        _jumpVelY -= GRAVITY * delta;
+        let ny = feetY + _jumpVelY * delta;
+        // 머리 위에서 아래로 레이캐스트 → 발 근처/아래에서 가장 높은 표면
+        _rayOrigin.set(px, feetY + 2.2, pz);
+        _downRay.set(_rayOrigin, _downDir);
+        _downRay.far = 300;
+        const hits = _downRay.intersectObjects(jumpTargets, false);
+        let landY = 0;
+        for (const h of hits) { if (h.point.y <= feetY + 0.3) { landY = h.point.y; break; } }
+        if (_jumpVelY <= 0 && ny <= landY) {        // 하강 중 표면 도달 → 착지
+            ny = landY; _jumpVelY = 0; _airborne = false;
+        }
+        av.group.position.y = ny;
+    } else {
+        // ── 지상: 걷는 표면에 스냅 ──
+        _rayOrigin.set(px, feetY + STEP_UP, pz);
+        _downRay.set(_rayOrigin, _downDir);
+        _downRay.far = STEP_UP + 400;
+        const hits = _downRay.intersectObjects(jumpTargets, false);
+        const target = hits.length ? hits[0].point.y : 0;   // 발밑 가장 높은 표면(없으면 지면 0)
+        if (target > feetY + 0.02) {
+            // 낮은 단차(≤STEP_UP) → 걸어 올라섬
+            av.group.position.y = target;
+        } else if (target < feetY - 0.06) {
+            // 발밑이 꺼짐(가장자리 이탈) → 낙하 시작
+            _airborne = true; _jumpVelY = 0;
+        } else {
+            av.group.position.y = target;           // 미세 보정
+        }
+    }
+}
+
+/** SPACE 점프 트리거 — 지상에 있을 때만. 본인 아바타 필요. */
+function trySelfJump() {
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    if (!av || sittingSeat) return;
+    if (_airborne) return;                          // 이미 공중이면 무시(더블점프 방지)
+    _jumpVelY = JUMP_SPEED;
+    _airborne = true;
 }
 
 /**
@@ -3446,6 +3512,9 @@ function animate() {
             }
         }
     }
+
+    // ── 본인 아바타 수직 물리(점프·중력·가구 위 착지) — 매 프레임 ──
+    updateSelfVertical(delta, myPersonId && keysDown.size > 0 && !_isTyping());
 
     // ── 아바타 뷰 카메라 갱신(접근/1인칭) — 이동 여부와 무관하게 매 프레임 추종 ──
     updateAvatarCamera(delta);
@@ -6074,9 +6143,10 @@ window.addEventListener('keydown', (e) => {
     // 텍스트 입력(채팅·검색 등) 중이면 게임 단축키(Space·G·R·V·숫자뷰·이동키)를 전부 무시.
     // preventDefault도 하지 않으므로 입력창에서 Space/화살표 등 정상 타이핑 보장.
     if (_isTyping()) return;
+    // SPACE: 본인 아바타 점프 (지상에서만 발동 → 의자·탁자 위 착지 가능)
     if (e.code === 'Space') {
         e.preventDefault();
-        fetch('/demo', { method: 'POST' }).catch(() => {});
+        trySelfJump();
         return;
     }
     // 이동 키 — 텍스트 입력 중에는 무시
@@ -6100,8 +6170,11 @@ window.addEventListener('keydown', (e) => {
         const next = order[(order.indexOf(avatarViewMode) + 1) % order.length];
         setAvatarViewMode(next);
     }
-    // G 키로 점심 게임 수동 실행
-    if (e.code === 'KeyG') triggerLunchGame();
+    // Ctrl+G(또는 ⌘+G)로 점심 게임 수동 실행 — 단독 G와 분리(오발 방지)
+    if (e.code === 'KeyG' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        triggerLunchGame();
+    }
 });
 
 /** 프리셋 뷰(1~8·R) 적용 전, 접근/1인칭 카메라 제어를 해제하고 타워로 되돌린다(자동 조망 tween 없이). */
@@ -6124,3 +6197,14 @@ window.addEventListener('keyup', (e) => {
 
 // 포커스 잃을 때 이동 키 초기화 (Alt+Tab 등으로 전환 시 키 stuck 방지)
 window.addEventListener('blur', () => { keysDown.clear(); });
+
+// ---- 점프 착지면(jumpTargets) 1회 수집 ----
+// 이 시점에는 정적 환경(바닥·슬래브·가구)만 envGroup에 있고, 플레이어 아바타는
+// 이후 비동기(/api/people·WS)로 추가되므로 자연히 제외된다. → 자기/타인 아바타 머리에 안 올라탐.
+(function collectJumpTargets() {
+    jumpTargets.length = 0;
+    envGroup.traverse((o) => {
+        if (o.isMesh && o.visible !== false) jumpTargets.push(o);
+    });
+    // walkables(슬래브·계단·데크)도 envGroup 소속이라 이미 포함됨.
+})();
