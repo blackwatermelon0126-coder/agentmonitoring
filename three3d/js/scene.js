@@ -4278,8 +4278,64 @@ function openMonitorSetupModal(prefillEmail) {
         a.href = url; a.download = 'metaoffice-monitor-setup.bat';
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 2000);
+        ov.remove();                              // 설정 모달 닫고
+        showBatInstallGuide($('#ms-user').value.trim());   // 큰 설치 안내창 표시
     };
     $('#ms-close').onclick = () => ov.remove();
+}
+
+/** .bat 다운로드 후 표시하는 '크게' 설치 안내 매뉴얼 — 용도·설치 단계·주의사항. */
+function showBatInstallGuide(email) {
+    let ov = document.getElementById('bat-guide-overlay');
+    if (ov) ov.remove();
+    ov = document.createElement('div');
+    ov.id = 'bat-guide-overlay';
+    ov.style.cssText = `position:fixed; inset:0; z-index:1400; display:flex; align-items:center; justify-content:center; background:rgba(4,7,14,0.72); backdrop-filter:blur(3px);`;
+    ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+
+    const card = document.createElement('div');
+    card.style.cssText = `width:600px; max-width:94vw; max-height:90vh; overflow:auto; background:linear-gradient(160deg,#0f1a2e,#0c1220); border:1px solid #34507f; border-radius:18px; padding:28px 30px; font-family:monospace; color:#eaf2ff; box-shadow:0 18px 64px rgba(0,0,0,0.7);`;
+
+    card.innerHTML = `
+        <div style="font-size:22px; font-weight:800; letter-spacing:0.5px; margin-bottom:4px;">📥 설정 파일이 다운로드되었습니다</div>
+        <div style="color:#9fb3d1; font-size:13px; margin-bottom:18px;">아래 순서대로 <b style="color:#fff">실행(설치)</b>하면 연동이 완료됩니다.</div>
+
+        <div style="background:rgba(47,111,237,0.12); border:1px solid #2F6FED55; border-radius:12px; padding:14px 16px; margin-bottom:18px;">
+            <div style="font-size:14px; font-weight:bold; color:#8ab4ff; margin-bottom:6px;">💡 이게 무슨 설정인가요? (용도)</div>
+            <div style="font-size:12.5px; line-height:1.75; color:#cfe0ff;">
+                내 PC의 <b>Claude Code(AI 에이전트)</b>가 하는 작업(파일 편집·명령 실행 등)을
+                이 모니터링 서버로 실시간 전송하도록 연결합니다.<br>
+                설치하면 3D 오피스에서 <b>내 아바타 머리 위 🤖 AI 버튼</b>이 켜지고,
+                클릭 시 <b>PM·LEAD·DEV·OPS·QA 역할별 진행 현황</b>이 실시간으로 보입니다.<br>
+                즉, "누가 지금 무슨 AI 작업을 하는지"를 가상 오피스에서 함께 보기 위한 연결입니다.
+            </div>
+        </div>
+
+        <div style="font-size:14px; font-weight:bold; color:#8affc0; margin-bottom:10px;">🛠 설치 순서</div>
+        <ol style="margin:0 0 4px 20px; padding:0; font-size:13px; line-height:2.0; color:#eaf2ff;">
+            <li><b>다운로드 폴더</b>에서 <code style="background:#0a1120; padding:2px 6px; border-radius:5px; color:#8affc0;">metaoffice-monitor-setup.bat</code> 를 찾습니다.</li>
+            <li>파일을 <b>더블클릭</b>합니다. (관리자 권한 불필요)</li>
+            <li>Windows 보안 경고가 뜨면 <b>추가 정보 → 실행</b> 을 누릅니다.</li>
+            <li>검은 창에 <b style="color:#8affc0;">[완료]</b> 메시지가 뜨면 아무 키나 눌러 닫습니다.</li>
+            <li><b>Claude Code</b> (와 터미널)를 <b>완전히 종료 후 재시작</b> 합니다. <span style="color:#8aa;">(환경변수 적용)</span></li>
+            <li>이 3D 화면을 <b>새로고침</b> 하고, 내 아바타 <b>🤖 AI</b> 버튼이 초록으로 켜지는지 확인합니다.</li>
+        </ol>
+
+        <div style="background:rgba(255,193,7,0.10); border:1px solid #ffc10744; border-radius:10px; padding:11px 14px; margin:16px 0; font-size:12px; line-height:1.7; color:#ffe08a;">
+            ⚠ <b>이메일이 정확해야 합니다.</b> 설정된 이메일<b style="color:#fff;">${email ? ` (${_esc(email)})` : ''}</b>은
+            3D에서 로그인한 Azure 계정과 <b>동일</b>해야 내 아바타에 매칭됩니다.
+        </div>
+
+        <div style="color:#7a8aa5; font-size:11px; line-height:1.7; margin-bottom:16px;">
+            · 설정 파일은 환경변수 3개(<code>AGENT_MONITOR_URL</code>, <code>AGENT_MONITOR_USER</code>, <code>CLAUDE_ROLE</code>)만 등록합니다.<br>
+            · 브라우저는 보안상 PC 환경변수를 직접 못 바꾸므로 이 파일을 1회 실행하는 방식입니다.<br>
+            · 연동 해제는 시스템 환경변수에서 위 3개를 삭제하면 됩니다.
+        </div>
+
+        <button id="bat-guide-close" style="width:100%; background:#2F6FED; color:#fff; border:none; border-radius:10px; padding:11px; font-family:monospace; font-size:13px; font-weight:bold; cursor:pointer;">확인했습니다</button>`;
+    ov.appendChild(card);
+    document.body.appendChild(ov);
+    card.querySelector('#bat-guide-close').onclick = () => ov.remove();
 }
 function openUserPanel(email, name) {
     _openInfoPanel = { kind: 'user', email: (email || '').toLowerCase() };
