@@ -3293,6 +3293,14 @@ const _kbFwd = new THREE.Vector3();
 const _kbRgt = new THREE.Vector3();
 const _kbUp  = new THREE.Vector3(0, 1, 0);
 
+// ---- 아바타 뷰 모드 (VIEW 옵션) ----
+// 'tower'    : 멀리서 조망(기본, OrbitControls 자유 조작)
+// 'approach' : 아바타 뒤 위에서 따라가는 3인칭
+// 'fpv'      : 아바타 머리에서 전방 응시(1인칭)
+let avatarViewMode = 'tower';
+const _camTmpPos = new THREE.Vector3();
+const _camTmpTgt = new THREE.Vector3();
+
 /** 입력 포커스가 텍스트 필드에 있으면 true — 채팅 입력 중 이동 방지 */
 function _isTyping() {
     const el = document.activeElement;
@@ -3320,11 +3328,79 @@ function _scheduleSaveMyPosition() {
     _savePositionTimer = setTimeout(_saveMyPosition, 300);
 }
 
+/**
+ * 접근/1인칭 뷰에서 매 프레임 카메라를 본인 아바타에 맞춰 배치.
+ * 타워 모드거나 본인 아바타가 없으면 아무것도 안 함(OrbitControls 자유).
+ */
+function updateAvatarCamera(delta) {
+    if (avatarViewMode === 'tower') return;
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    if (!av) return;
+    const ry = av.group.rotation.y;
+    const fx = Math.sin(ry), fz = Math.cos(ry);   // 아바타 정면(+z) 방향
+    const px = av.group.position.x, py = av.group.position.y, pz = av.group.position.z;
+    const a = 1 - Math.exp(-9 * delta);           // 프레임레이트 독립 스무딩
+
+    if (avatarViewMode === 'fpv') {
+        av.group.visible = false;                 // 1인칭 — 본인 몸 숨김(로컬 렌더만)
+        const eyeH = 1.55;
+        _camTmpPos.set(px + fx * 0.2, py + eyeH, pz + fz * 0.2);
+        _camTmpTgt.set(px + fx * 12, py + eyeH * 0.92, pz + fz * 12);
+    } else {
+        // approach — 아바타 뒤 위에서 어깨너머로
+        av.group.visible = true;
+        const DIST = 5.5, HEIGHT = 3.2;
+        _camTmpPos.set(px - fx * DIST, py + HEIGHT, pz - fz * DIST);
+        _camTmpTgt.set(px + fx * 2, py + 1.3, pz + fz * 2);
+    }
+    camera.position.lerp(_camTmpPos, a);
+    controls.target.lerp(_camTmpTgt, a);
+    camera.lookAt(controls.target);
+}
+
+/** 뷰 모드 전환(버튼/단축키에서 호출). approach·fpv는 본인 아바타 필요. */
+function setAvatarViewMode(mode) {
+    if ((mode === 'approach' || mode === 'fpv') && !(myPersonId && personAvatarMap.get(myPersonId))) {
+        showSelectToast('로그인 후 본인 아바타가 있을 때 사용할 수 있어요');
+        return;
+    }
+    // 1인칭에서 빠져나올 때 숨겼던 본인 아바타 복구
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    if (av) av.group.visible = true;
+
+    avatarViewMode = mode;
+    if (mode === 'tower') {
+        controls.enabled = true;                  // 마우스 자유 조작 복귀
+        if (av) {
+            // 본인 아바타를 중심으로 멀리서 조망
+            tweenView({
+                pos: [av.group.position.x - 18, 26, av.group.position.z + 34],
+                target: [av.group.position.x, 1, av.group.position.z],
+            });
+        }
+    } else {
+        controls.enabled = false;                 // 카메라를 코드가 제어(마우스 회전/줌 잠금)
+    }
+    updateViewButtons();
+}
+
+/** 뷰 전환 버튼 활성 표시 갱신. */
+function updateViewButtons() {
+    const wrap = document.getElementById('view-switcher');
+    if (!wrap) return;
+    wrap.querySelectorAll('button[data-view]').forEach((b) => {
+        const active = b.getAttribute('data-view') === avatarViewMode;
+        b.style.background = active ? '#2F6FED' : 'rgba(255,255,255,0.08)';
+        b.style.color = active ? '#fff' : '#cfe0ff';
+    });
+}
+
 function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
     const elapsed = clock.getElapsedTime();
-    controls.update();
+    // 타워 모드에서만 OrbitControls 갱신 — 접근/1인칭은 updateAvatarCamera가 카메라 전담(충돌 방지)
+    if (avatarViewMode === 'tower') controls.update();
     updateAvatarKeyboardMove(delta, elapsed);
     updateSelectionIndicator(elapsed);
     updateInteractHint();
@@ -3334,25 +3410,45 @@ function animate() {
         const av = personAvatarMap.get(myPersonId);
         if (av) {
             const SPEED = 5; // 3D 단위/초
-            // 카메라가 바라보는 수평 방향 기준으로 이동 — 직관적인 조작감
-            camera.getWorldDirection(_kbFwd); _kbFwd.y = 0; _kbFwd.normalize();
-            _kbRgt.crossVectors(_kbFwd, _kbUp).normalize();
+            if (avatarViewMode === 'tower') {
+                // [타워] 카메라가 바라보는 수평 방향 기준으로 이동 — 자유 조망에 맞는 조작감
+                camera.getWorldDirection(_kbFwd); _kbFwd.y = 0; _kbFwd.normalize();
+                _kbRgt.crossVectors(_kbFwd, _kbUp).normalize();
 
-            let mx = 0, mz = 0;
-            if (keysDown.has('KeyW') || keysDown.has('ArrowUp'))    { mx += _kbFwd.x; mz += _kbFwd.z; }
-            if (keysDown.has('KeyS') || keysDown.has('ArrowDown'))  { mx -= _kbFwd.x; mz -= _kbFwd.z; }
-            if (keysDown.has('KeyA') || keysDown.has('ArrowLeft'))  { mx -= _kbRgt.x; mz -= _kbRgt.z; }
-            if (keysDown.has('KeyD') || keysDown.has('ArrowRight')) { mx += _kbRgt.x; mz += _kbRgt.z; }
+                let mx = 0, mz = 0;
+                if (keysDown.has('KeyW') || keysDown.has('ArrowUp'))    { mx += _kbFwd.x; mz += _kbFwd.z; }
+                if (keysDown.has('KeyS') || keysDown.has('ArrowDown'))  { mx -= _kbFwd.x; mz -= _kbFwd.z; }
+                if (keysDown.has('KeyA') || keysDown.has('ArrowLeft'))  { mx -= _kbRgt.x; mz -= _kbRgt.z; }
+                if (keysDown.has('KeyD') || keysDown.has('ArrowRight')) { mx += _kbRgt.x; mz += _kbRgt.z; }
 
-            if (mx !== 0 || mz !== 0) {
-                const len = Math.sqrt(mx * mx + mz * mz);
-                av.group.position.x += (mx / len) * SPEED * delta;
-                av.group.position.z += (mz / len) * SPEED * delta;
-                av.group.rotation.y = Math.atan2(mx / len, mz / len); // 이동 방향으로 캐릭터 회전
-                _scheduleSaveMyPosition();
+                if (mx !== 0 || mz !== 0) {
+                    const len = Math.sqrt(mx * mx + mz * mz);
+                    av.group.position.x += (mx / len) * SPEED * delta;
+                    av.group.position.z += (mz / len) * SPEED * delta;
+                    av.group.rotation.y = Math.atan2(mx / len, mz / len); // 이동 방향으로 캐릭터 회전
+                    _scheduleSaveMyPosition();
+                }
+            } else {
+                // [접근/1인칭] W/S = 바라보는 방향 전진·후진, A/D = 좌우 회전(방향 전환)
+                const TURN = 2.4; // rad/s
+                let turned = false;
+                if (keysDown.has('KeyA') || keysDown.has('ArrowLeft'))  { av.group.rotation.y += TURN * delta; turned = true; }
+                if (keysDown.has('KeyD') || keysDown.has('ArrowRight')) { av.group.rotation.y -= TURN * delta; turned = true; }
+                let fwd = 0;
+                if (keysDown.has('KeyW') || keysDown.has('ArrowUp'))   fwd += 1;
+                if (keysDown.has('KeyS') || keysDown.has('ArrowDown')) fwd -= 1;
+                if (fwd !== 0) {
+                    const ry = av.group.rotation.y;           // +z가 정면
+                    av.group.position.x += Math.sin(ry) * fwd * SPEED * delta;
+                    av.group.position.z += Math.cos(ry) * fwd * SPEED * delta;
+                }
+                if (fwd !== 0 || turned) _scheduleSaveMyPosition();
             }
         }
     }
+
+    // ── 아바타 뷰 카메라 갱신(접근/1인칭) — 이동 여부와 무관하게 매 프레임 추종 ──
+    updateAvatarCamera(delta);
 
     // ── 내 캐릭터 걷기 애니메이션 (손발 움직임) ──
     if (myPersonId) {
@@ -5640,6 +5736,8 @@ function updateAvatarKeyboardMove(delta, elapsed) {
     // ---- 팔로우 카메라: 시야 각도·줌·높이 유지, 아바타를 따라 평행 이동만 (회전 없음 → 어지럼 없음) ----
     // controls.target을 아바타 눈높이로 부드럽게 옮기고, 카메라도 '타깃 이동량만큼' 함께 옮겨
     // 상대 오프셋(각도·거리·높이)을 그대로 유지한다. (controls.update() 뒤에 호출되어 이번 프레임에 반영)
+    // 단, 접근/1인칭 뷰 모드에서는 updateAvatarCamera가 카메라를 전담하므로 여기선 스킵(충돌 방지).
+    if (avatarViewMode !== 'tower') return;
     const desired = new THREE.Vector3(av.group.position.x, av.group.position.y + FOLLOW_TARGET_Y, av.group.position.z);
     const a = 1 - Math.exp(-FOLLOW_LERP * delta);   // 프레임레이트 독립 스무딩
     const prevTX = controls.target.x, prevTY = controls.target.y, prevTZ = controls.target.z;
@@ -5876,6 +5974,34 @@ initChatPanel({ apiBase: '' }); // 같은 origin(상대경로)
 // ---- Windows(OS) 데스크톱 알림 초기화 (chat/agent/meeting/system, 클릭 시 기능 연결) ----
 initNotifications();
 
+// ---- VIEW 선택 UI (타워 / 접근 / 1인칭) — 상단 중앙, #info 바로 아래 ----
+(function createViewSwitcher() {
+    const wrap = document.createElement('div');
+    wrap.id = 'view-switcher';
+    wrap.style.cssText = `
+        position:fixed; top:48px; left:50%; transform:translateX(-50%); z-index:850;
+        display:flex; gap:6px; background:rgba(0,0,0,0.55); backdrop-filter:blur(4px);
+        border:1px solid #2a3550; border-radius:10px; padding:5px 6px; font-family:monospace;`;
+    const OPTS = [
+        { view: 'tower',    label: '🗼 타워',   title: '멀리서 조망 (자유 카메라)' },
+        { view: 'approach', label: '🎥 접근',   title: '아바타 뒤에서 따라가는 3인칭' },
+        { view: 'fpv',      label: '👤 1인칭',  title: '아바타 시점 (FPV)' },
+    ];
+    OPTS.forEach(({ view, label, title }) => {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.title = title;
+        b.setAttribute('data-view', view);
+        b.style.cssText = `
+            background:rgba(255,255,255,0.08); color:#cfe0ff; border:none; border-radius:7px;
+            padding:6px 11px; font-family:monospace; font-size:12px; cursor:pointer; white-space:nowrap;`;
+        b.onclick = () => setAvatarViewMode(view);
+        wrap.appendChild(b);
+    });
+    document.body.appendChild(wrap);
+    updateViewButtons();
+})();
+
 // ---- Azure 개인 로그인(MSAL) 게이트 + 로그인 사용자 자동 아바타 ----
 // 로그인 완료 시, 본인 MSAL 계정 프로필로 조직 피커 없이 아바타를 자동 등록한다(서버 /api/me 미의존 — 본인 신분).
 async function ensureSelfAvatar(account) {
@@ -5956,17 +6082,34 @@ window.addEventListener('keydown', (e) => {
         keysDown.add(e.code);
         return;
     }
-    // 프리셋 뷰 (1~5)
+    // 프리셋 뷰 (1~8) — 접근/1인칭 상태였다면 타워로 복귀해야 프리셋이 적용됨
     if (VIEWS[e.key]) {
+        _exitToTower();
         tweenView(VIEWS[e.key]);
         const help = document.getElementById('view-hint');
         if (help) help.textContent = `📷 ${VIEWS[e.key].name}`;
     }
     // R 키로 초기 뷰
-    if (e.code === 'KeyR') tweenView(VIEWS['1']);
+    if (e.code === 'KeyR') { _exitToTower(); tweenView(VIEWS['1']); }
+    // V 키로 뷰 모드 순환 (타워 → 접근 → 1인칭 → 타워)
+    if (e.code === 'KeyV' && !_isTyping()) {
+        const order = ['tower', 'approach', 'fpv'];
+        const next = order[(order.indexOf(avatarViewMode) + 1) % order.length];
+        setAvatarViewMode(next);
+    }
     // G 키로 점심 게임 수동 실행
     if (e.code === 'KeyG') triggerLunchGame();
 });
+
+/** 프리셋 뷰(1~8·R) 적용 전, 접근/1인칭 카메라 제어를 해제하고 타워로 되돌린다(자동 조망 tween 없이). */
+function _exitToTower() {
+    if (avatarViewMode === 'tower') return;
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    if (av) av.group.visible = true;
+    avatarViewMode = 'tower';
+    controls.enabled = true;
+    updateViewButtons();
+}
 
 window.addEventListener('keyup', (e) => {
     if (MY_MOVE_KEYS.has(e.code)) {
