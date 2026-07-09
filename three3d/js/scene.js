@@ -4406,8 +4406,8 @@ function refreshAiButton(email) {
         btn.style.background = '#1d6fa5';
         btn.style.boxShadow = '0 0 6px #29b6f6aa, 0 2px 6px rgba(0,0,0,0.4)';
         btn.textContent = '🤖 AI';
-    } else {                                // 미연결 — 기본 파랑
-        btn.style.background = '#2F6FED';
+    } else {                                // 미연결 — 회색
+        btn.style.background = '#5a6472';
         btn.style.boxShadow = '0 2px 6px rgba(0,0,0,0.4)';
         btn.textContent = '🤖 AI';
     }
