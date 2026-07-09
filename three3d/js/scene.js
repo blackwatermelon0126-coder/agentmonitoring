@@ -3469,6 +3469,29 @@ function trySelfJump() {
     _airborne = true;
 }
 
+/**
+ * 아바타 위치 초기화 — 벽·가구 사이 등 잘못된 곳에 끼었을 때 안전한 홈으로 즉시 복귀.
+ * 홈: 부서 소속이면 해당 부서 방(DEPT_ROOMS), 아니면 정문 광장 고정점(0, 8).
+ * 앉기/점프·낙하 상태를 정리하고 서버에 위치를 저장한다.
+ */
+function resetSelfPosition() {
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    if (!av) { showSelectToast('로그인 후 본인 아바타가 있을 때 사용할 수 있어요'); return; }
+    if (sittingSeat) standUp();                     // 앉아 있으면 먼저 일어서기
+    // 홈 좌표 산정
+    let hx = 0, hz = 8;                              // 기본: 정문 광장
+    if (av.department && DEPT_ROOMS[av.department]) {
+        hx = DEPT_ROOMS[av.department].x;
+        hz = DEPT_ROOMS[av.department].z;
+    }
+    av.group.position.set(hx, PERSON_GROUND_Y, hz); // 즉시 이동(층 높이도 지상으로 복귀)
+    av.group.rotation.y = 0;
+    av.targetPos = { x: hx, z: hz };                // 원격 보간이 되돌리지 않게 목표점도 동기화
+    _airborne = false; _jumpVelY = 0;               // 점프/낙하 상태 해제
+    _saveMyPosition();                              // 서버 저장
+    showSelectToast('🏠 위치를 초기화했어요');
+}
+
 /** 펫 클릭 처리: 내 아바타가 가까우면 앉아 쓰다듬기 + 펫 배까기, 멀면 기존 재롱. */
 function startPetOrTrick(anType) {
     const isDog = anType === 'dog';
@@ -3584,6 +3607,34 @@ function updateViewButtons() {
     });
 }
 
+/**
+ * 아바타 걷기/idle 손발 애니메이션 (자기·원격 아바타 공용 헬퍼).
+ * DetailedPerson은 updatePersonAnimation, 수박/부리부리몬은 walkLimbType 메쉬를 직접 제어.
+ */
+function animateAvatarWalk(av, isWalking, elapsed, delta) {
+    if (av.personObj && av.personObj.legL) {
+        updatePersonAnimation(av.personObj, isWalking ? 'walking-in' : 'idle', 100, elapsed, delta, false);
+    } else {
+        if (!av._wl) {
+            av._wl = {};
+            av.group.traverse(o => { if (o.userData.walkLimbType) av._wl[o.userData.walkLimbType] = o; });
+        }
+        const wl = av._wl;
+        if (isWalking) {
+            const wp = elapsed * 4;
+            if (wl.armL) wl.armL.rotation.x = Math.sin(wp + Math.PI) * 0.5;
+            if (wl.armR) wl.armR.rotation.x = Math.sin(wp) * 0.5;
+            if (wl.legL) wl.legL.rotation.x = Math.sin(wp) * 0.55;
+            if (wl.legR) wl.legR.rotation.x = Math.sin(wp + Math.PI) * 0.55;
+        } else {
+            if (wl.armL) wl.armL.rotation.x *= 0.85;
+            if (wl.armR) wl.armR.rotation.x *= 0.85;
+            if (wl.legL) wl.legL.rotation.x *= 0.85;
+            if (wl.legR) wl.legR.rotation.x *= 0.85;
+        }
+    }
+}
+
 function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
@@ -3657,31 +3708,29 @@ function animate() {
             }
           } else {
             const isWalking = keysDown.size > 0 && !_isTyping();
-            if (walkAv.personObj && walkAv.personObj.legL) {
-                // DetailedPerson — 기존 updatePersonAnimation 활용
-                updatePersonAnimation(walkAv.personObj, isWalking ? 'walking-in' : 'idle', 100, elapsed, delta, false);
-            } else {
-                // Watermelon / Buriburimon — userData.walkLimbType 태그된 메쉬 직접 제어
-                if (!walkAv._wl) {
-                    walkAv._wl = {};
-                    walkAv.group.traverse(o => { if (o.userData.walkLimbType) walkAv._wl[o.userData.walkLimbType] = o; });
-                }
-                const wl = walkAv._wl;
-                if (isWalking) {
-                    const wp = elapsed * 4;
-                    if (wl.armL) wl.armL.rotation.x = Math.sin(wp + Math.PI) * 0.5;
-                    if (wl.armR) wl.armR.rotation.x = Math.sin(wp) * 0.5;
-                    if (wl.legL) wl.legL.rotation.x = Math.sin(wp) * 0.55;
-                    if (wl.legR) wl.legR.rotation.x = Math.sin(wp + Math.PI) * 0.55;
-                } else {
-                    // 정지 시 자연스럽게 중립 복귀
-                    if (wl.armL) wl.armL.rotation.x *= 0.85;
-                    if (wl.armR) wl.armR.rotation.x *= 0.85;
-                    if (wl.legL) wl.legL.rotation.x *= 0.85;
-                    if (wl.legR) wl.legR.rotation.x *= 0.85;
-                }
-            }
+            animateAvatarWalk(walkAv, isWalking, elapsed, delta);
           }
+        }
+    }
+
+    // ── 원격(타인) 아바타: 목표점(targetPos) 향해 부드럽게 이동 + 걷기 애니메이션 ──
+    // syncPersonAvatars가 하드 스냅 대신 av.targetPos만 갱신 → 여기서 프레임 보간으로 걸어가듯 이동.
+    if (personAvatarMap.size > 0) {
+        const smooth = 1 - Math.exp(-10 * delta);   // 프레임레이트 독립 스무딩
+        for (const [id, av] of personAvatarMap) {
+            if (id === myPersonId || av === draggingAvatar) continue;   // 자기·드래그중 제외
+            const tp = av.targetPos;
+            if (!tp) { animateAvatarWalk(av, false, elapsed, delta); continue; }
+            const dx = tp.x - av.group.position.x;
+            const dz = tp.z - av.group.position.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            let isWalking = false;
+            if (dist > 0.02) {
+                av.group.position.x += dx * smooth;
+                av.group.position.z += dz * smooth;
+                if (dist > 0.05) { av.group.rotation.y = Math.atan2(dx, dz); isWalking = true; }   // 진행 방향 회전(+z 정면)
+            }
+            animateAvatarWalk(av, isWalking, elapsed, delta);
         }
     }
 
@@ -4966,7 +5015,18 @@ restoreAgentStates();
 // ============================================================
 // 🏢 6실 오피스 단지 — 중정(中庭) 배치
 // ============================================================
+// 이 단지는 scene.add 최종 복원(위 envGroup 마무리) 이후에 생성되어 envGroup의
+// -18 뒤로이동을 못 받아 CAFE 타워(2F 식당·3F 매점)와 월드좌표상 겹쳤다.
+// 단지 전체(시각 Group·DEPT_ROOMS·동물 순찰 WP)를 아래 단일 오프셋으로 뒤(-z)로 민다.
+const OFFICE_COMPLEX_OFFSET_Z = -16;
 {
+    // 블록 내부 scene.add(...) 호출을 officeComplexGroup으로 리다이렉트 → position.z 한 번으로 전체 이동.
+    const officeComplexGroup = new THREE.Group();
+    officeComplexGroup.position.z = OFFICE_COMPLEX_OFFSET_Z;
+    _origSceneAdd(officeComplexGroup);
+    const _preOCAdd = scene.add;
+    scene.add = function (o) { officeComplexGroup.add(o); return scene; };
+
     const OCX = -35, OCZ = -25;
     const OCH = 3.2;
     const OWT = 0.18;
@@ -5223,26 +5283,29 @@ restoreAgentStates();
     southPath.position.set(OCX, 0.05, OCZ + cyD / 2 + 4);
     scene.add(southPath);
 
-    // ── 동물 순찰 웨이포인트 추가 ───────────────────────
+    // ── 동물 순찰 웨이포인트 추가 (단지 이동 오프셋 반영) ───
     ANIMAL_PATROL_WPS.push(
-        { x: -35, z: -25 },
-        { x: -39, z: -31 },
-        { x: -31, z: -31 },
-        { x: -44, z: -25 },
-        { x: -26, z: -25 },
-        { x: -39, z: -19 },
-        { x: -31, z: -19 },
+        { x: -35, z: -25 + OFFICE_COMPLEX_OFFSET_Z },
+        { x: -39, z: -31 + OFFICE_COMPLEX_OFFSET_Z },
+        { x: -31, z: -31 + OFFICE_COMPLEX_OFFSET_Z },
+        { x: -44, z: -25 + OFFICE_COMPLEX_OFFSET_Z },
+        { x: -26, z: -25 + OFFICE_COMPLEX_OFFSET_Z },
+        { x: -39, z: -19 + OFFICE_COMPLEX_OFFSET_Z },
+        { x: -31, z: -19 + OFFICE_COMPLEX_OFFSET_Z },
     );
+
+    scene.add = _preOCAdd;   // 오피스 단지 블록 종료 — scene.add 패치 복원
 }
 
 // 부서 → 3D 룸 좌표 매핑 (createPersonAvatar에서 참조)
+// z에는 시각 이동과 동일한 OFFICE_COMPLEX_OFFSET_Z를 더해 아바타 스폰을 방 위치와 일치시킨다.
 const DEPT_ROOMS = {
-    '솔루션 개발 1팀': { x: -39, z: -33.5 },
-    '솔루션 개발 2팀': { x: -31, z: -33.5 },
-    '대표님 사무실':   { x: -48, z: -25   },
-    '시스템 운영팀':   { x: -22, z: -25   },
-    '인프라팀':        { x: -39, z: -16.5 },
-    '창고':            { x: -31, z: -16.5 },
+    '솔루션 개발 1팀': { x: -39, z: -33.5 + OFFICE_COMPLEX_OFFSET_Z },
+    '솔루션 개발 2팀': { x: -31, z: -33.5 + OFFICE_COMPLEX_OFFSET_Z },
+    '대표님 사무실':   { x: -48, z: -25   + OFFICE_COMPLEX_OFFSET_Z },
+    '시스템 운영팀':   { x: -22, z: -25   + OFFICE_COMPLEX_OFFSET_Z },
+    '인프라팀':        { x: -39, z: -16.5 + OFFICE_COMPLEX_OFFSET_Z },
+    '창고':            { x: -31, z: -16.5 + OFFICE_COMPLEX_OFFSET_Z },
 };
 
 // P6: 리조트 회의 테이블 좌석 — makeMeetingTable seatR = radius + 0.8 공식과 일치.
@@ -5435,8 +5498,13 @@ function syncPersonAvatars(people) {
             const isMovingByKey = person.id === myPersonId && keysDown.size > 0;
             if (av !== draggingAvatar && !isMovingByKey) {
                 const s = personPosToScene(person.position);
-                // y(층 높이)는 보존 — 엘리베이터로 상층에 올라간 아바타가 people-update로 1층으로 떨어지지 않게.
-                av.group.position.set(s.x, av.group.position.y, s.z);
+                if (person.id === myPersonId) {
+                    // 자기 아바타: 즉시 반영(로컬 조작 기준). y(층 높이) 보존.
+                    av.group.position.set(s.x, av.group.position.y, s.z);
+                } else {
+                    // 원격 아바타: 하드 스냅 대신 목표점만 갱신 → animate 루프가 부드럽게 보간 이동.
+                    av.targetPos = { x: s.x, z: s.z };
+                }
             }
         }
     }
@@ -6581,6 +6649,16 @@ initNotifications();
         b.onclick = () => setAvatarViewMode(view);
         wrap.appendChild(b);
     });
+    // 🏠 위치 초기화 버튼 — 잘못된 곳에 끼었을 때 홈으로 복귀 (단축키 H와 동일)
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = '🏠 초기화';
+    resetBtn.title = '아바타 위치 초기화 (단축키: H)';
+    resetBtn.style.cssText = `
+        background:rgba(255,255,255,0.08); color:#ffd8a8; border:none; border-radius:7px;
+        padding:6px 11px; font-family:monospace; font-size:12px; cursor:pointer; white-space:nowrap;
+        margin-left:4px; border-left:1px solid #2a3550;`;
+    resetBtn.onclick = () => resetSelfPosition();
+    wrap.appendChild(resetBtn);
     document.body.appendChild(wrap);
     updateViewButtons();
 })();
@@ -6688,6 +6766,11 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyG' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         triggerLunchGame();
+    }
+    // H 키 — 아바타 위치 초기화(홈 복귀). 잘못된 곳에 끼었을 때 복구용.
+    if (e.code === 'KeyH' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        resetSelfPosition();
     }
 });
 
