@@ -4138,8 +4138,11 @@ function renderAiPanel(email, name) {
     }
     card.innerHTML = _infoHeader(`🤖 ${_esc(name || email || '사용자')} — AI 진행 현황`) +
         `<div style="margin-top:6px;">${rows}</div>` +
-        (roles ? '' : `<div style="color:#7a8aa5; font-size:11px; margin-top:12px; line-height:1.6;">이 사용자의 Claude Code 훅이 아직 서버로 연결되지 않았습니다.<br>각 PC에 훅을 설정하면 실시간 표시됩니다.</div>`) +
+        (roles ? '' : `<div style="color:#7a8aa5; font-size:11px; margin-top:12px; line-height:1.6;">이 사용자의 Claude Code 훅이 아직 서버로 연결되지 않았습니다.<br>아래 <b>내 PC 연결 설정</b>으로 훅을 등록하면 실시간 표시됩니다.</div>`) +
+        `<button id="ai-setup-btn" style="margin-top:14px; width:100%; background:#2F6FED; color:#fff; border:none; border-radius:8px; padding:9px; font-family:monospace; font-size:12px; font-weight:bold; cursor:pointer;">⚙ 내 PC 연결 설정</button>` +
         _infoCloseBtn();
+    const setupBtn = card.querySelector('#ai-setup-btn');
+    if (setupBtn) setupBtn.onclick = () => openMonitorSetupModal();
     _wireInfoClose(card);
 }
 
@@ -4182,6 +4185,101 @@ function openAiPanel(email, name) {
     _openInfoPanel = { kind: 'ai', email: (email || '').toLowerCase() };
     getInfoPopup().style.display = 'flex';
     renderAiPanel(email, name);
+}
+
+/** 클립보드 복사(HTTPS 보안 컨텍스트 → navigator.clipboard, 폴백 execCommand). */
+function _copyText(t) {
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(t);
+    const ta = document.createElement('textarea');
+    ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch { /* noop */ }
+    ta.remove();
+    return Promise.resolve();
+}
+
+/**
+ * 내 PC ↔ 서버 연결 설정 모달.
+ * ⚠ 브라우저는 OS 환경변수를 직접 못 쓴다 → 입력값으로 (1)복사용 명령 (2).bat 다운로드를 생성.
+ * 사용자가 1회 실행하면 각 PC에 환경변수가 등록되어 훅이 서버로 전송된다.
+ */
+function openMonitorSetupModal(prefillEmail) {
+    const acct = (typeof getAccount === 'function' && getAccount()) || null;
+    const email = prefillEmail || (acct && acct.username) || '';
+    const serverUrl = `${location.protocol}//${location.host}`;   // 현재 접속 서버(=전송 대상)
+
+    let ov = document.getElementById('monitor-setup-overlay');
+    if (!ov) {
+        ov = document.createElement('div');
+        ov.id = 'monitor-setup-overlay';
+        ov.style.cssText = `position:fixed; inset:0; z-index:1300; display:flex; align-items:center; justify-content:center; background:rgba(5,8,15,0.55);`;
+        ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+        document.body.appendChild(ov);
+    }
+    ov.innerHTML = '';
+    const card = document.createElement('div');
+    card.style.cssText = `width:440px; max-width:92vw; max-height:86vh; overflow:auto; background:rgba(12,18,30,0.98); border:1px solid #2a3550; border-radius:14px; padding:20px 22px; font-family:monospace; color:#fff; box-shadow:0 12px 48px rgba(0,0,0,0.65);`;
+
+    const field = (label, id, value, ph) => `
+        <label style="display:block; margin:10px 0 4px; color:#9fb3d1; font-size:11px;">${label}</label>
+        <input id="${id}" value="${_esc(value)}" placeholder="${ph || ''}" spellcheck="false"
+            style="width:100%; box-sizing:border-box; background:#0e1526; color:#e6f0ff; border:1px solid #2a3550; border-radius:7px; padding:8px 10px; font-family:monospace; font-size:12px;">`;
+
+    card.innerHTML = `
+        <div style="font-size:15px; font-weight:bold; margin-bottom:2px;">⚙ 내 PC 에이전트 모니터링 연결</div>
+        <div style="color:#7a8aa5; font-size:11px; line-height:1.6; margin-bottom:6px;">
+            아래 값으로 <b>명령을 복사</b>해 터미널에 1회 실행하거나 <b>.bat 다운로드</b> 후 더블클릭하세요.<br>
+            (브라우저는 PC 환경변수를 직접 등록할 수 없어 1회 실행이 필요합니다.)
+        </div>
+        ${field('서버 URL (전송 대상)', 'ms-url', serverUrl, 'https://metaoffice.fllab.internal')}
+        ${field('내 이메일 (3D 로그인과 동일해야 아바타 매칭)', 'ms-user', email, 'hong@ctr.co.kr')}
+        <label style="display:block; margin:10px 0 4px; color:#9fb3d1; font-size:11px;">역할</label>
+        <select id="ms-role" style="width:100%; box-sizing:border-box; background:#0e1526; color:#e6f0ff; border:1px solid #2a3550; border-radius:7px; padding:8px 10px; font-family:monospace; font-size:12px;">
+            <option value="developer">developer</option>
+            <option value="devops">devops</option>
+            <option value="qa">qa</option>
+            <option value="pm">pm</option>
+            <option value="leader">leader</option>
+        </select>
+        <label style="display:block; margin:12px 0 4px; color:#9fb3d1; font-size:11px;">생성된 설정 명령 (PowerShell)</label>
+        <textarea id="ms-cmd" readonly rows="4" style="width:100%; box-sizing:border-box; background:#0a1120; color:#8affc0; border:1px solid #2a3550; border-radius:7px; padding:8px 10px; font-family:monospace; font-size:11px; resize:none;"></textarea>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+            <button id="ms-copy"    style="flex:1; background:#2F6FED; color:#fff; border:none; border-radius:8px; padding:9px; font-family:monospace; font-size:12px; font-weight:bold; cursor:pointer;">📋 명령 복사</button>
+            <button id="ms-dl"      style="flex:1; background:#1f8a3b; color:#fff; border:none; border-radius:8px; padding:9px; font-family:monospace; font-size:12px; font-weight:bold; cursor:pointer;">⬇ .bat 다운로드</button>
+        </div>
+        <button id="ms-close" style="margin-top:8px; width:100%; background:#26324d; color:#cfe0ff; border:none; border-radius:8px; padding:8px; font-family:monospace; font-size:12px; cursor:pointer;">닫기</button>
+        <div style="color:#7a8aa5; font-size:10px; margin-top:8px;">설정 후 <b>새 터미널</b>에서 Claude Code를 재시작해야 적용됩니다.</div>`;
+    ov.appendChild(card);
+
+    const $ = (id) => card.querySelector(id);
+    const buildCmd = () => {
+        const url = $('#ms-url').value.trim();
+        const usr = $('#ms-user').value.trim();
+        const role = $('#ms-role').value;
+        return `setx AGENT_MONITOR_URL  "${url}"\nsetx AGENT_MONITOR_USER "${usr}"\nsetx CLAUDE_ROLE        "${role}"`;
+    };
+    const buildBat = () => {
+        const url = $('#ms-url').value.trim();
+        const usr = $('#ms-user').value.trim();
+        const role = $('#ms-role').value;
+        return `@echo off\r\nchcp 65001 >nul\r\nsetx AGENT_MONITOR_URL "${url}"\r\nsetx AGENT_MONITOR_USER "${usr}"\r\nsetx CLAUDE_ROLE "${role}"\r\necho.\r\necho [완료] 새 터미널에서 Claude Code를 재시작하세요.\r\npause\r\n`;
+    };
+    const refresh = () => { $('#ms-cmd').value = buildCmd(); };
+    ['#ms-url', '#ms-user', '#ms-role'].forEach(sel => $(sel).addEventListener('input', refresh));
+    refresh();
+
+    $('#ms-copy').onclick = () => {
+        _copyText(buildCmd()).then(() => { $('#ms-copy').textContent = '✅ 복사됨'; setTimeout(() => { $('#ms-copy').textContent = '📋 명령 복사'; }, 1500); });
+    };
+    $('#ms-dl').onclick = () => {
+        const blob = new Blob([buildBat()], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'metaoffice-monitor-setup.bat';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+    };
+    $('#ms-close').onclick = () => ov.remove();
 }
 function openUserPanel(email, name) {
     _openInfoPanel = { kind: 'user', email: (email || '').toLowerCase() };
