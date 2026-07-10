@@ -14,6 +14,7 @@ import { initChatPanel, openChat, handleTeamsNotification, isChatOpen } from './
 import { initNotifications, notify } from './notifications.js';
 import { initAuthGate, getAccount, getAccessToken, getFileAccessToken } from './auth-msal.js';
 import { sendMessage as graphSendMessage } from './chat-graph.js';
+import { createJumpTower, createJumpMapArea, updateJumpmap, onWaxStep, resetWax, isWaxStarted } from './jumpmap.js';
 
 
 // ---- 캐릭터 특성 풀 ----
@@ -338,8 +339,18 @@ scene.add = _origSceneAdd; // 패치 해제 (공장/창고는 그룹 밖)
 // 공장 서쪽 입구(-x 방향) 진출입로 + 창고와 공장 사이 연결로
 createPath(-22, 25, 14, 3, 0x90A4AE);
 createPath(-32, 22, 10, 3, 0x90A4AE); // 창고 ↔ 공장 진입로
-createFactory(scene);
-createWarehouse(scene);
+const factoryGroup = createFactory(scene);
+const warehouseGroup = createWarehouse(scene);
+// ---- 점프맵 ----
+// 타워 외형: 오키나와 정자(월드 x≈10.5~21.5·z≈-18.5~-7.5) 동쪽 빈 잔디에 배치 — 수영장 열(z≈-13)과 정렬.
+// scene 루트(envGroup 밖)라 z 오프셋을 안 받고, 모듈 끝 jumpTargets 수집(envGroup 순회)에서도 제외된다.
+const JUMP_TOWER_POS = { x: 28, z: -13 };
+const jumpTower = createJumpTower(JUMP_TOWER_POS);
+scene.add(jumpTower.group);                 // 이 시점 scene.add = _origSceneAdd(루트)
+// 점프맵 공간: 오피스에서 멀리(카메라 far=300 밖)로 떨어뜨린 별도 영역. 최초 숨김.
+const JUMPMAP_ORIGIN = { x: 0, z: 500 };
+const jumpMapArea = createJumpMapArea(JUMPMAP_ORIGIN);
+scene.add(jumpMapArea.group);
 scene.add = function(obj) { envGroup.add(obj); return scene; }; // 다시 envGroup으로
 
 // ============================================
@@ -3399,6 +3410,7 @@ function _isTyping() {
 /** 내 캐릭터 현재 3D 위치를 서버에 저장 (debounce 후 호출) */
 function _saveMyPosition() {
     if (!myPersonId) return;
+    if (inJumpmap) return;   // 점프맵 좌표(먼 별도 영역)는 오피스 position으로 저장하지 않음
     const av = personAvatarMap.get(myPersonId);
     if (!av) return;
     const pos = scenePosToPerson(av.group.position.x, av.group.position.z);
@@ -3437,12 +3449,17 @@ function updateSelfVertical(delta, moving) {
         _downRay.set(_rayOrigin, _downDir);
         _downRay.far = 300;
         const hits = _downRay.intersectObjects(jumpTargets, false);
-        let landY = 0;
-        for (const h of hits) { if (h.point.y <= feetY + 0.3) { landY = h.point.y; break; } }
+        let landY = 0, landMesh = null;
+        for (const h of hits) { if (h.point.y <= feetY + 0.3) { landY = h.point.y; landMesh = h.object; break; } }
+        let justLanded = false;
         if (_jumpVelY <= 0 && ny <= landY) {        // 하강 중 표면 도달 → 착지
-            ny = landY; _jumpVelY = 0; _airborne = false;
+            ny = landY; _jumpVelY = 0; _airborne = false; justLanded = true;
         }
         av.group.position.y = ny;
+        if (inJumpmap) {
+            if (justLanded) _onJumpmapLanded(landMesh);                  // 왁스 크런치 · 골 · 바닥 실패 판정
+            else if (ny < -10) _respawnJumpmap('🕯 낙하! 시작점으로');   // 맵 밖 허공 안전망
+        }
     } else {
         // ── 지상: 걷는 표면에 스냅 ──
         _rayOrigin.set(px, feetY + STEP_UP, pz);
@@ -3450,6 +3467,7 @@ function updateSelfVertical(delta, moving) {
         _downRay.far = STEP_UP + 400;
         const hits = _downRay.intersectObjects(jumpTargets, false);
         const target = hits.length ? hits[0].point.y : 0;   // 발밑 가장 높은 표면(없으면 지면 0)
+        if (inJumpmap && hits.length) onWaxStep(hits[0].object);   // 걸어 올라선 발판(1번 등) 왁스도 깨짐(no-op 저렴)
         if (target > feetY + 0.02) {
             // 낮은 단차(≤STEP_UP) → 걸어 올라섬
             av.group.position.y = target;
@@ -3646,6 +3664,8 @@ function animate() {
     updateAvatarKeyboardMove(delta, elapsed);
     updateSelectionIndicator(elapsed);
     updateInteractHint();
+    updateJumpmap(elapsed, delta);
+    updatePortals();
 
     // ── 내 캐릭터 키보드 이동 (WASD / 화살표) ──
     if (myPersonId && keysDown.size > 0 && !_isTyping()) {
@@ -4109,6 +4129,15 @@ let selectionRing = null;
 let myPersonId = null;
 const keysDown = new Set();
 let _savePositionTimer = null;
+
+// ⚠ TDZ 방지: animate()가 updatePortals()에서 아래 값들을 참조하므로 animate() 앞에서 선언.
+// (officeJumpTargets는 모듈 끝 jumpTargets 수집 이후 대입 — 그 전까진 null이라 exitJumpmap 미호출)
+let inJumpmap = false;         // 현재 점프맵 안에 있는지
+let _portalInRange = false;    // 본인 아바타가 활성 포탈 입장 반경 안에 있는지(SPACE 입장 판정용)
+let _portalArmed = true;       // 전환 직후 포탈 반경을 벗어나기 전 재발동 방지(SPACE 오발 방지)
+let _savedOffice = null;       // 입장 전 오피스 위치 복원용 { x, y, z, ry }
+let _portalHintEl = null;      // 포탈 근접 힌트 DOM
+let officeJumpTargets = null;  // 오피스 착지면 스냅샷
 
 animate();
 
@@ -5442,7 +5471,9 @@ function createPersonAvatar(person) {
         group.position.set(rm.x + col * 2.0 - 2.0, PERSON_GROUND_Y, rm.z + row * 2.0 - 1.0);
     } else if (person.position && (person.position.x !== undefined) && (person.position.y !== undefined)) {
         const s = personPosToScene(person.position);
-        group.position.set(s.x, PERSON_GROUND_Y, s.z);
+        // 안전망: 저장 위치가 오피스 대지(잔디 ±80) 밖 — 예: 과거 점프맵(z≈500) 좌표 잔존 — 이면 기본 자리로
+        if (Math.abs(s.x) > 90 || Math.abs(s.z) > 90) group.position.set(0, PERSON_GROUND_Y, 6);
+        else group.position.set(s.x, PERSON_GROUND_Y, s.z);
     } else {
         const idx = personAvatarMap.size;
         const targetX = -4 + (idx % 5) * 2;
@@ -6217,6 +6248,7 @@ function updateInteractHint() {
 
 /** 3D 씬 좌표 → 서버 position(2D px) 역변환 후 영속화 (드래그·키보드 이동 공용) */
 function persistPersonPosition(id) {
+    if (inJumpmap) return;   // 점프맵 좌표(먼 별도 영역)는 오피스 position으로 저장하지 않음 — M 이동모드 등 모든 경로 차단
     const av = personAvatarMap.get(id);
     if (!av) return;
     const pos = scenePosToPerson(av.group.position.x, av.group.position.z);
@@ -6752,6 +6784,15 @@ window.__controls = controls;
 window.__scene = scene;
 window.__applyWeather = applyWeather;
 window.__forceDayPhase = null; // 0..1 설정시 시간 고정
+// 점프맵 디버그/E2E(로그인 없이 CDP에서 검증용) — 본인 아바타 지정·텔레포트·맵 전환·왁스 상태
+window.__jmDebug = {
+    setMy: (id) => { myPersonId = id; },
+    tp: (x, y, z) => { const av = personAvatarMap.get(myPersonId); if (av) { av.group.position.set(x, y, z); av.group.visible = true; } },
+    pos: () => { const av = personAvatarMap.get(myPersonId); return av ? av.group.position.toArray() : null; },
+    enter: () => enterJumpmap(),
+    exit: () => exitJumpmap(),
+    isWaxStarted,
+};
 
 window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 // P3(blackwatermelon) '내 아바타 이동'용 키셋 — Gahyun의 MOVE_KEYS(선택아바타·화살표전용)와 이름 분리(중복선언 방지).
@@ -6761,9 +6802,10 @@ window.addEventListener('keydown', (e) => {
     // 텍스트 입력(채팅·검색 등) 중이면 게임 단축키(Space·G·R·V·숫자뷰·이동키)를 전부 무시.
     // preventDefault도 하지 않으므로 입력창에서 Space/화살표 등 정상 타이핑 보장.
     if (_isTyping()) return;
-    // SPACE: 본인 아바타 점프 (지상에서만 발동 → 의자·탁자 위 착지 가능)
+    // SPACE: 포탈 반경 안이면 점프맵 입장/복귀, 그 외엔 본인 아바타 점프(지상에서만 → 가구 위 착지 가능)
     if (e.code === 'Space') {
         e.preventDefault();
+        if (tryPortalToggle()) return;   // 포탈 근처 → 맵 전환
         trySelfJump();
         return;
     }
@@ -6831,3 +6873,152 @@ window.addEventListener('blur', () => { keysDown.clear(); });
     });
     // walkables(슬래브·계단·데크)도 envGroup 소속이라 이미 포함됨.
 })();
+
+// ============================================
+// 점프맵 맵 전환(포탈) — 오피스 ⇄ 점프맵
+// ------------------------------------------------------------------
+// 같은 씬에서 오피스 그룹(envGroup·공장·창고·타워·타인 아바타)을 숨기고
+//   점프맵 그룹을 보이며, 본인 아바타를 점프맵 좌표로 텔레포트한다.
+//   jumpTargets(착지면)도 점프맵 것으로 스왑해 점프 물리가 그대로 동작한다.
+// 전환은 포탈 반경 진입 시 자동 발동(반경을 벗어나야 재장전 → 즉시 재전환/왕복 방지).
+// ============================================
+officeJumpTargets = jumpTargets.slice();            // 오피스 착지면 스냅샷(수집 직후)
+const jumpmapTargets = jumpMapArea.targets;         // 점프맵 착지면
+
+function _setJumpTargets(list) { jumpTargets.length = 0; for (const m of list) jumpTargets.push(m); }
+
+/** 점프맵 진입 시 타인 아바타(3D 메쉬 + HTML 라벨) 숨김 — 라벨은 group.visible과 무관하게 투영되므로 명시적으로 감춘다. */
+function _hideOfficeAvatars() {
+    for (const [id, av] of personAvatarMap) {
+        if (id === myPersonId) continue;
+        av._jmVis = av.group.visible;
+        av._jmLbl = av.labelEl ? av.labelEl.style.display : null;
+        av.group.visible = false;
+        if (av.labelEl) av.labelEl.style.display = 'none';
+        if (av.bubbleEl) av.bubbleEl.style.display = 'none';
+        if (av.meetingEl) av.meetingEl.style.display = 'none';
+    }
+}
+/** 오피스 복귀 시 타인 아바타 가시성 복원 후, 세션 트래킹 온라인 상태로 재보정. */
+function _showOfficeAvatars() {
+    for (const [id, av] of personAvatarMap) {
+        if (id === myPersonId) continue;
+        if (av._jmVis !== undefined) av.group.visible = av._jmVis;
+        if (av.labelEl && av._jmLbl != null) av.labelEl.style.display = av._jmLbl;
+        if (av.meetingEl) av.meetingEl.style.display = '';
+    }
+    _applySessionVisibilityAll();                   // 내부에 _sessionTrackingActive 가드 있음
+}
+
+function enterJumpmap() {
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    if (!av) { showSelectToast('로그인 후 본인 아바타가 있을 때 입장할 수 있어요'); return; }
+    if (sittingSeat) standUp();
+    keysDown.clear();
+    _savedOffice = { x: av.group.position.x, y: av.group.position.y, z: av.group.position.z, ry: av.group.rotation.y };
+    // 오피스 숨김
+    envGroup.visible = false;
+    if (factoryGroup) factoryGroup.visible = false;
+    if (warehouseGroup) warehouseGroup.visible = false;
+    jumpTower.group.visible = false;
+    _hideOfficeAvatars();
+    // 점프맵 표시 + 아바타 텔레포트
+    jumpMapArea.group.visible = true;
+    resetWax();                                     // 입장할 때마다 왁스 새것
+    const sp = jumpMapArea.spawn;
+    av.group.position.set(sp.x, sp.y, sp.z);
+    av.group.rotation.y = 0;                        // +z(맵 안쪽·발판 방향) 바라봄
+    _airborne = false; _jumpVelY = 0;
+    _setJumpTargets(jumpmapTargets);
+    inJumpmap = true; _portalArmed = false;
+    if (avatarViewMode === 'tower') tweenView({ pos: [sp.x - 10, 9, sp.z + 14], target: [sp.x, 1, sp.z + 4] }, 700);
+    showSelectToast('🌀 점프맵 입장! — 주황 포탈에서 SPACE로 복귀');
+}
+
+function exitJumpmap() {
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    // 점프맵 숨김
+    jumpMapArea.group.visible = false;
+    // 오피스 복원
+    envGroup.visible = true;
+    if (factoryGroup) factoryGroup.visible = true;
+    if (warehouseGroup) warehouseGroup.visible = true;
+    jumpTower.group.visible = true;
+    _showOfficeAvatars();
+    if (av && _savedOffice) {
+        av.group.position.set(_savedOffice.x, _savedOffice.y, _savedOffice.z);
+        av.group.rotation.y = _savedOffice.ry;
+    }
+    _airborne = false; _jumpVelY = 0;
+    keysDown.clear();
+    _setJumpTargets(officeJumpTargets);
+    inJumpmap = false; _portalArmed = false;
+    if (av && avatarViewMode === 'tower') {
+        tweenView({ pos: [av.group.position.x - 12, 12, av.group.position.z + 16], target: [av.group.position.x, 1, av.group.position.z] }, 700);
+    }
+    showSelectToast('🏢 오피스로 복귀');
+}
+
+/** 매 프레임: 본인 아바타가 활성 포탈 입장 반경 안인지 갱신 + 힌트 표시. 실제 전환은 SPACE(trySelfJump 앞)에서. */
+function updatePortals() {
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    if (!av) { _portalInRange = false; _hidePortalHint(); return; }
+    const p = inJumpmap ? jumpMapArea.returnPortal : jumpTower.portal;
+    const dx = av.group.position.x - p.x, dz = av.group.position.z - p.z;
+    const d2 = dx * dx + dz * dz;
+    const rangeR = p.r + 2.2;                       // 입장 가능 반경(= 힌트 반경)
+    if (d2 > rangeR * rangeR) {                     // 반경 이탈 → 재장전 + 힌트 숨김
+        _portalInRange = false; _portalArmed = true; _hidePortalHint();
+        return;
+    }
+    _portalInRange = true;
+    // 전환 직후(재장전 전)엔 힌트를 숨겨 SPACE=점프로 쓰게 하고, 반경을 벗어났다 다시 오면 입장 힌트 노출
+    if (_portalArmed) _showPortalHint(inJumpmap ? '🏢 SPACE로 오피스 복귀' : '🌀 SPACE로 점프맵 입장');
+    else _hidePortalHint();
+}
+
+/** SPACE가 포탈 입장/복귀에 쓰일 상황인지(포탈 반경 안 + 재장전 상태). true면 전환 실행. */
+function tryPortalToggle() {
+    if (!(_portalInRange && _portalArmed)) return false;
+    _portalArmed = false;
+    _hidePortalHint();
+    if (inJumpmap) exitJumpmap(); else enterJumpmap();
+    return true;
+}
+
+/** 점프맵 착지 판정: 골 → 왁스 크런치 → 바닥 실패(리스폰) 순. updateSelfVertical의 착지 시 호출. */
+function _onJumpmapLanded(mesh) {
+    if (mesh && mesh.userData.jmGoal) {             // 골 발판 — 첫 착지면 크런치도 함께
+        onWaxStep(mesh);
+        showSelectToast('🏆 왁뿌 타워 클리어!');
+        return;
+    }
+    if (mesh && onWaxStep(mesh)) return;            // 왁스 깸 — 정상 진행
+    const isFloor = !mesh || mesh.userData.jmFloor; // 바닥(또는 맵 밖 기본면 y=0)
+    if (isFloor && isWaxStarted()) _respawnJumpmap('🕯 미끄러졌다! 처음부터 — 왁스 복구');
+}
+
+/** 점프맵 리스폰: 시작점 복귀 + 왁스 전체 복구. */
+function _respawnJumpmap(msg) {
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    if (!av) return;
+    resetWax();
+    const sp = jumpMapArea.spawn;
+    av.group.position.set(sp.x, sp.y, sp.z);
+    av.group.rotation.y = 0;
+    _airborne = false; _jumpVelY = 0;
+    if (msg) showSelectToast(msg);
+}
+
+function _showPortalHint(txt) {
+    if (!_portalHintEl) {
+        _portalHintEl = document.createElement('div');
+        _portalHintEl.style.cssText = 'position:fixed; bottom:172px; left:50%; transform:translateX(-50%); z-index:1600;'
+            + ' background:rgba(0,120,200,0.92); color:#fff; font-family:sans-serif; font-size:15px; font-weight:700; padding:9px 18px;'
+            + ' border-radius:18px; pointer-events:none; box-shadow:0 4px 16px rgba(0,0,0,0.35);';
+        document.body.appendChild(_portalHintEl);
+    }
+    _portalHintEl.textContent = txt;
+    _portalHintEl.style.display = 'block';
+}
+function _hidePortalHint() { if (_portalHintEl) _portalHintEl.style.display = 'none'; }
