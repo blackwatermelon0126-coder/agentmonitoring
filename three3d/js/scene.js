@@ -4392,18 +4392,57 @@ async function renderUserPanel(email, name) {
     if (!_openInfoPanel || _openInfoPanel.kind !== 'user' || _openInfoPanel.email !== (email || '').toLowerCase()) return; // 그새 닫힘/전환
     const key = (email || '').toLowerCase();
     const info = orgUsersByEmail && orgUsersByEmail.get(key);
-    const av = [...personAvatarMap.values()].find(a => a.email === key);
+    const entry = [...personAvatarMap.entries()].find(([, a]) => a.email === key);
+    const avId = entry ? entry[0] : null;
+    const av = entry ? entry[1] : null;
     const dn = (info && info.displayName) || name || (av && av.displayName) || email || '사용자';
     const job = (info && info.jobTitle) || (av && av.department) || '';
+    // 본인 아바타만 변경 가능: 로그인한 내 아바타(myPersonId)의 이메일과 일치할 때만 선택 활성화.
+    const myAv = myPersonId && personAvatarMap.get(myPersonId);
+    const isMine = !!(myAv && (myAv.email || '') === key);
+    const curType = (av && av.avatarType) || 'auto';
+    const AVATAR_TYPES = [
+        { v: 'auto', label: '✨ 자동' }, { v: 'human', label: '🧍 휴먼' },
+        { v: 'zephoni', label: '𝒊 ZEPHONI' }, { v: 'watermelon', label: '🍉 수박' },
+        { v: 'buriburimon', label: '🐷 부리부리몬' }, { v: 'penguin', label: '🐧 펭귄' },
+    ];
+    const pickerBtns = AVATAR_TYPES.map(t => {
+        const active = t.v === curType;
+        const bg = active ? '#2F6FED' : 'rgba(255,255,255,0.06)';
+        const fg = active ? '#fff' : (isMine ? '#cfe0ff' : '#63708c');
+        const dis = isMine ? '' : 'disabled';
+        return `<button data-atype="${t.v}" ${dis} style="background:${bg}; color:${fg}; border:1px solid #2a3550; border-radius:7px; padding:6px 9px; font-family:monospace; font-size:11px; cursor:${isMine ? 'pointer' : 'default'}; white-space:nowrap;">${t.label}</button>`;
+    }).join('');
     card.innerHTML = _infoHeader(`👤 ${_esc(dn)}`) +
         `<div style="margin-top:8px; line-height:2.0; font-size:13px;">
             <div><span style="color:#7a8aa5; display:inline-block; width:56px;">이메일</span>${_esc(email || '-')}</div>
             <div><span style="color:#7a8aa5; display:inline-block; width:56px;">직책</span>${_esc(job || '-')}</div>
             <div><span style="color:#7a8aa5; display:inline-block; width:56px;">조직</span>FORMATIONLABS · Azure AD</div>
         </div>` +
+        `<div style="margin-top:12px; border-top:1px solid #26324d; padding-top:10px;">
+            <div style="color:#7a8aa5; font-size:11px; margin-bottom:6px;">아바타${isMine ? '' : ' (본인만 변경 가능)'}</div>
+            <div id="atype-row" style="display:flex; flex-wrap:wrap; gap:6px;">${pickerBtns}</div>
+        </div>` +
         (info ? '' : `<div style="color:#7a8aa5; font-size:11px; margin-top:12px;">Azure 조직 디렉터리에서 추가 정보를 찾지 못해 로컬 정보를 표시합니다.</div>`) +
         _infoCloseBtn();
     _wireInfoClose(card);
+
+    // 본인 아바타면 종류 선택 버튼 활성화 — 클릭 시 PUT + 낙관적 반영 + 패널 재렌더.
+    if (isMine && avId) {
+        card.querySelectorAll('#atype-row button[data-atype]').forEach(b => {
+            b.onclick = () => {
+                const v = b.getAttribute('data-atype');
+                const cav = personAvatarMap.get(avId);
+                if (!cav || (cav.avatarType || 'auto') === v) return;
+                cav.avatarType = v;                                  // 낙관적(하이라이트 즉시 갱신)
+                fetch(`/api/people/${avId}`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ avatarType: v }),         // 서버 병합 → people-update → 전원 아바타 재생성
+                }).catch(() => {});
+                renderUserPanel(email, name);
+            };
+        });
+    }
 }
 
 function openAiPanel(email, name) {
@@ -5443,16 +5482,22 @@ function createPersonAvatar(person) {
     // 상세 캐릭터 모델 — person.id 해시로 외형(피부·머리색·헤어스타일·성별)을 결정적 다양화.
     // 같은 id 는 항상 같은 외형 → 새로고침·재접속에도 일관. 셔츠색만 person.color 반영(바지·신발 고정).
     // 특별 캐릭터: ZEPHONI='i' 문자 / 102450@CTR.CO.KR=검은수박 / 김수비=부리부리몬 / 106078@CTR.CO.KR=핑쿠(펭귄) / 나머지=상세 휴먼.
+    // person.avatarType('human'|'zephoni'|'watermelon'|'buriburimon'|'penguin')이 있으면 그 종류로 강제, 없거나 'auto'면 이메일/이름 기반 자동 감지.
     const isZephoni = (person.name || '').trim().toUpperCase() === 'ZEPHONI';
-    const personObj = isZephoni
+    const makeAuto = () => isZephoni
         ? createICharacter(color)
-        : isWatermelon(person)
-            ? createWatermelonCharacter()
-            : isBuriburimon(person)
-                ? createBuriburimonCharacter()
-                : isPingu(person)
-                    ? createPenguinCharacter()
-                    : createDetailedPerson(traitsFromSeed(person.id, color));
+        : isWatermelon(person) ? createWatermelonCharacter()
+        : isBuriburimon(person) ? createBuriburimonCharacter()
+        : isPingu(person) ? createPenguinCharacter()
+        : createDetailedPerson(traitsFromSeed(person.id, color));
+    const forcedType = (person.avatarType && person.avatarType !== 'auto') ? person.avatarType : null;
+    const personObj =
+        forcedType === 'zephoni'     ? createICharacter(color) :
+        forcedType === 'watermelon'  ? createWatermelonCharacter() :
+        forcedType === 'buriburimon' ? createBuriburimonCharacter() :
+        forcedType === 'penguin'     ? createPenguinCharacter() :
+        forcedType === 'human'       ? createDetailedPerson(traitsFromSeed(person.id, color)) :
+        makeAuto();
     const group = personObj.group;
     group.scale.set(0.9, 0.9, 0.9);   // 계단 에이전트와 동일 스케일
 
@@ -5506,7 +5551,8 @@ function createPersonAvatar(person) {
     personAvatarMap.set(person.id, { group, personObj, pickMeshes, badge, labelEl, bubbleEl: null, unreadCount: 0,
         meetingEl: null, preMeetingPos: null, meetingSeatIdx: -1, meetingJoinUrl: null, btnsEl,
         displayName: person.name, shirtColorHex: person.color || '#4A90E2',
-        department: person.department || null, email: _emailKey });
+        department: person.department || null, email: _emailKey,
+        avatarType: person.avatarType || 'auto' });
 
     // P3: 세션 추적이 이미 시작된 상태(current-users 수신 후)라면, 신규 아바타 생성 시점에도
     // 온라인 여부를 즉시 반영한다(사람 아바타 생성 → user-joined 브로드캐스트 순서가 뒤바뀌는 경합 방지).
@@ -5547,8 +5593,8 @@ function syncPersonAvatars(people) {
             createPersonAvatar(person);
             continue;
         }
-        // 이름 변경(예: 서유지→ZEPHONI) 시 라벨·캐릭터 모델이 바뀌도록 아바타를 재생성한다.
-        if (av.displayName !== person.name) {
+        // 이름 변경(예: 서유지→ZEPHONI) 또는 아바타 종류(avatarType) 변경 시 캐릭터 모델을 재생성한다.
+        if (av.displayName !== person.name || av.avatarType !== (person.avatarType || 'auto')) {
             scene.remove(av.group);
             av.labelEl.remove();
             if (av.bubbleEl) av.bubbleEl.remove();

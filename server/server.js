@@ -664,7 +664,10 @@ app.put('/api/people/:id', (req, res) => {
     // id는 불변(클라이언트가 id를 보내도 기존 id 유지). position 등 나머지 필드는 병합.
     people[idx] = { ...people[idx], ...req.body, id: people[idx].id };
     broadcastPeople(people);   // 2D/3D 클라이언트에 즉시 반영(실시간 이동)
-    savePeopleDebounced(people); // 디스크 영속화는 디바운스(잦은 위치 PUT 부하 방지)
+    // 위치만 바뀌는 잦은 PUT은 디스크 저장 디바운스, 그 외(avatarType·name·color 등)는 즉시 저장.
+    const _keys = Object.keys(req.body || {});
+    const _positionOnly = _keys.length > 0 && _keys.every(k => k === 'position' || k === 'id');
+    if (_positionOnly) savePeopleDebounced(people); else savePeople(people);
     res.json(people[idx]);
 });
 
