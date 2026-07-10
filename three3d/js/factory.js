@@ -41,6 +41,7 @@ const products = [];
 const robotArms = [];
 const agingChambers = [];
 const popMonitors = [];
+const popScreens = [];        // 클릭 가능한 POP 화면/베젤 메쉬 (레이캐스트 픽 대상) — scene.js가 getPopScreens()로 조회
 const porters = [];          // 자재 운반 작업자 (왼쪽 입력): { person, line, lineZ, idleX, pickupX, z, faceY, carryBox, phaseStart }
 const inspectors = [];       // 검수 작업자 (오른쪽 입력): { person, line, x, z, faceY, phase }
 
@@ -565,6 +566,11 @@ function buildPopTerminal(group, x, z, label) {
     screen.rotation.x = -0.15;
     term.add(screen);
 
+    // 클릭 상호작용: 화면·베젤을 POP 픽 대상으로 등록(아바타가 앞에서 클릭 → 실제 POP 모달).
+    screen.userData.popScreen = true;   screen.userData.popLabel = label;
+    monBezel.userData.popScreen = true; monBezel.userData.popLabel = label;
+    popScreens.push(screen, monBezel);
+
     // 바코드 스캐너 (상단)
     const scanner = box(0.18, 0.1, 0.08, 0x1A1A1A);
     scanner.position.set(0.36, 1.12, 0.25);
@@ -692,6 +698,9 @@ function createProductMesh(lineName) {
 // ============================================
 // 메인 빌더
 // ============================================
+/** 클릭 가능한 POP 화면/베젤 메쉬 목록 반환 (scene.js 레이캐스트용). createFactory 이후 유효. */
+export function getPopScreens() { return popScreens; }
+
 export function createFactory(scene) {
     const group = new THREE.Group();
     group.name = 'CTR_Factory';

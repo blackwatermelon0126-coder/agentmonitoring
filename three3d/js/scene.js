@@ -5,7 +5,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createFactory, updateFactory } from './factory.js';
+import { createFactory, updateFactory, getPopScreens } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
 import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, updatePersonAnimation, createICharacter, createWatermelonCharacter, createBuriburimonCharacter, createPenguinCharacter } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
@@ -1709,10 +1709,116 @@ function enterCafe() {
             else showSelectToast('먼저 아바타를 추가/선택하세요');
             return;
         }
+        // 공장 POP 모니터 클릭 → 실제 POP 화면 모달 (아바타가 POP 앞에 있을 때만)
+        const popPick = getPopScreens();
+        if (popPick.length) {
+            const popHit = ray.intersectObjects(popPick, false)[0];
+            if (popHit) {
+                if (!_isNearPop(popHit.object)) { showSelectToast('POP 단말기 앞으로 가서 클릭하세요'); return; }
+                openPopModal(popHit.object.userData.popLabel || '');
+                return;
+            }
+        }
     });
 
     renderOrders();   // 초기 렌더(로드시 저장된 주문 표시)
 })();
+
+// ============================================
+// 공장 POP 단말기 클릭 → 실제 POP 화면 모달 (STEP 2)
+//  - 아바타가 POP 앞(≤7유닛)일 때만 오픈.
+//  - 모달 iframe(/3d/pop/pop-screen-v3-dark.html)은 같은 origin이라, 로드 후 iframe 문서에
+//    직접 손가락(검지) 터치 커서를 주입 — 마우스 대신 실제 공장 POP 터치처럼 보이게 한다.
+// ============================================
+const _popWorldPos = new THREE.Vector3(), _avWorldPos = new THREE.Vector3();
+function _isNearPop(mesh) {
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    if (!av) return true;                       // 로그인/아바타 없으면 편의상 허용
+    mesh.getWorldPosition(_popWorldPos);
+    av.group.getWorldPosition(_avWorldPos);
+    const dx = _popWorldPos.x - _avWorldPos.x, dz = _popWorldPos.z - _avWorldPos.z;
+    return Math.sqrt(dx * dx + dz * dz) <= 7;
+}
+
+/** iframe(POP 화면) 문서 안에 손가락 커서 + 탭 애니메이션 주입 (same-origin). */
+function _injectPopFingerCursor(doc) {
+    try {
+        const st = doc.createElement('style');
+        st.textContent =
+            '*{cursor:none !important;}' +
+            '@keyframes popIdleTap{0%,100%{transform:translateY(0)}50%{transform:translateY(3px)}}' +
+            '@keyframes popTapNow{0%{transform:translateY(0)}35%{transform:translateY(11px) scale(0.9)}100%{transform:translateY(0)}}' +
+            '#pop-finger{position:fixed;left:0;top:0;font-size:42px;line-height:1;pointer-events:none;z-index:2147483647;' +
+            'filter:drop-shadow(0 3px 4px rgba(0,0,0,0.55));animation:popIdleTap 1.1s ease-in-out infinite;will-change:transform,left,top;}' +
+            '#pop-finger.pop-tap{animation:popTapNow 0.26s ease-out;}';
+        doc.head.appendChild(st);
+        const h = doc.createElement('div');
+        h.id = 'pop-finger'; h.textContent = '👆';
+        doc.body.appendChild(h);
+        doc.addEventListener('mousemove', (e) => {
+            h.style.left = (e.clientX - 18) + 'px';   // 검지 끝이 커서에 오도록 보정
+            h.style.top  = (e.clientY - 6) + 'px';
+        });
+        doc.addEventListener('pointerdown', () => {     // 클릭/터치 시 검지 까딱(탭)
+            h.classList.remove('pop-tap'); void h.offsetWidth; h.classList.add('pop-tap');
+        }, true);
+        h.addEventListener('animationend', (e) => { if (e.animationName === 'popTapNow') h.classList.remove('pop-tap'); });
+    } catch (_) { /* cross-origin 등 실패 시 기본 커서 */ }
+}
+
+let _popModalOpen = false;
+function openPopModal(label) {
+    if (_popModalOpen) return;
+    _popModalOpen = true;
+    const ov = document.createElement('div');
+    ov.id = 'pop-modal-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2000;background:rgba(2,5,11,0.82);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px);';
+
+    const boxEl = document.createElement('div');
+    boxEl.style.cssText = 'position:relative;display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:#070D18;box-shadow:0 24px 80px rgba(0,0,0,0.7);border:1px solid #1C2A44;';
+
+    const bar = document.createElement('div');
+    bar.style.cssText = 'height:44px;display:flex;align-items:center;gap:10px;padding:0 10px 0 16px;background:#0B1322;border-bottom:1px solid #1C2A44;color:#DCE6F4;font-family:monospace;font-size:14px;flex-shrink:0;';
+    bar.innerHTML = '<span style="width:9px;height:9px;border-radius:50%;background:#35C275;"></span><b>CTR POP System</b><span style="color:#5F7190;">· ' + _esc(label || '단말기') + '</span><div style="flex:1"></div>';
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕ 닫기';
+    closeBtn.style.cssText = 'cursor:pointer;border:none;background:rgba(242,109,109,0.16);color:#ff9b9b;border-radius:8px;padding:7px 13px;font-family:monospace;font-size:13px;font-weight:700;';
+    bar.appendChild(closeBtn);
+
+    const iwrap = document.createElement('div');
+    iwrap.style.cssText = 'overflow:hidden;';
+    const iframe = document.createElement('iframe');
+    iframe.src = '/3d/pop/pop-screen-v3-dark.html';
+    iframe.style.cssText = 'width:1024px;height:768px;border:none;display:block;background:#0B1322;transform-origin:top left;';
+    iwrap.appendChild(iframe);
+
+    boxEl.appendChild(bar); boxEl.appendChild(iwrap);
+    ov.appendChild(boxEl);
+    document.body.appendChild(ov);
+
+    function fit() {
+        const s = Math.min((innerWidth * 0.96) / 1024, (innerHeight * 0.94 - 44) / 768, 1.4);
+        iframe.style.transform = 'scale(' + s + ')';
+        iwrap.style.width = (1024 * s) + 'px';
+        iwrap.style.height = (768 * s) + 'px';
+    }
+    fit();
+    const onResize = () => fit();
+    window.addEventListener('resize', onResize);
+
+    iframe.addEventListener('load', () => { _injectPopFingerCursor(iframe.contentDocument); });
+
+    function close() {
+        window.removeEventListener('resize', onResize);
+        document.removeEventListener('keydown', onKey);
+        ov.remove();
+        _popModalOpen = false;
+    }
+    function onKey(e) { if (e.key === 'Escape') close(); }
+    closeBtn.addEventListener('click', close);
+    ov.addEventListener('click', (e) => { if (e.target === ov) close(); });   // 배경 클릭 닫기
+    document.addEventListener('keydown', onKey);
+}
 
 // ============================================
 // MEALPLAN-01: 2F 식당 이번 주 식단표 오버레이
