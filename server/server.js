@@ -609,6 +609,13 @@ function savePeopleDebounced(people) {
     _savePeopleTimer = setTimeout(() => { _savePeopleTimer = null; savePeople(people); }, 1000);
 }
 
+// 성능: 위치 전용 PUT(실시간 이동, ~150ms)마다 전체 people 배열을 전파하면 직렬화·네트워크 부하가 큼.
+// → 경량 델타 {id, position} 만 브로드캐스트. 구조 변경(name·avatarType 등)은 기존 broadcastPeople 유지.
+function broadcastPosition(id, position) {
+    const msg = JSON.stringify({ type: 'people-pos', id, position });
+    clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+}
+
 let people = loadPeople();
 
 /** GET /api/people — 사람 목록 반환 */
@@ -663,11 +670,17 @@ app.put('/api/people/:id', (req, res) => {
     if (idx === -1) return res.status(404).json({ error: '사람을 찾을 수 없습니다.' });
     // id는 불변(클라이언트가 id를 보내도 기존 id 유지). position 등 나머지 필드는 병합.
     people[idx] = { ...people[idx], ...req.body, id: people[idx].id };
-    broadcastPeople(people);   // 2D/3D 클라이언트에 즉시 반영(실시간 이동)
-    // 위치만 바뀌는 잦은 PUT은 디스크 저장 디바운스, 그 외(avatarType·name·color 등)는 즉시 저장.
+    // 위치만 바뀌는 잦은 PUT → 경량 델타 전파 + 디스크 저장 디바운스.
+    // 그 외(avatarType·name·color 등) → 전체 people 전파 + 즉시 저장.
     const _keys = Object.keys(req.body || {});
     const _positionOnly = _keys.length > 0 && _keys.every(k => k === 'position' || k === 'id');
-    if (_positionOnly) savePeopleDebounced(people); else savePeople(people);
+    if (_positionOnly) {
+        broadcastPosition(people[idx].id, people[idx].position);
+        savePeopleDebounced(people);
+    } else {
+        broadcastPeople(people);
+        savePeople(people);
+    }
     res.json(people[idx]);
 });
 
