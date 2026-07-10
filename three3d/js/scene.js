@@ -43,6 +43,8 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // 성능: 고DPI 픽셀 상한 2→1.5 (렌더 픽셀 수 절감)
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap; // 부드러운 그림자 + VSM보다 가벼움(블러 패스 없음, 성능 최적화)
+renderer.shadowMap.autoUpdate = false; // 성능: 그림자맵을 매 프레임이 아니라 격프레임(~30fps)만 갱신(animate에서 needsUpdate 토글)
+let _shadowFrame = 0, _overlayAccum = 0, _jumpAccum = 0;  // 성능 스로틀 상태(그림자·오버레이·점프맵)
 renderer.toneMapping = THREE.ACESFilmicToneMapping; // 게임처럼 풍부한 색감
 renderer.toneMappingExposure = 1.6; // 밝기와 대비를 조금 더 강하게
 document.body.appendChild(renderer.domElement);
@@ -98,7 +100,7 @@ scene.add(ambientLight);
 const sun = new THREE.DirectionalLight(0xfff8e0, 2.5); // 태양광 강도 증가
 sun.position.set(15, 25, 12);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048); // 성능 최적화: 4096→2048 (매 프레임 그림자맵 비용 1/4, 육안 차이 미미)
+sun.shadow.mapSize.set(1024, 1024); // 성능 최적화: 4096→2048→1024 (그림자맵 텍셀 추가 절감, PCFSoft로 부드러움 유지)
 sun.shadow.camera.near = 0.5;
 sun.shadow.camera.far = 100;
 sun.shadow.camera.left = -70; sun.shadow.camera.right = 70;
@@ -3671,12 +3673,20 @@ function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
     const elapsed = clock.getElapsedTime();
+    // 성능(그림자): autoUpdate=false 상태에서 격프레임마다만 그림자맵 재렌더(~30fps). 아바타 그림자는 유지되되 갱신 빈도만 절반.
+    renderer.shadowMap.needsUpdate = (_shadowFrame++ % 2) === 0;
     // 타워 모드에서만 OrbitControls 갱신 — 접근/1인칭은 updateAvatarCamera가 카메라 전담(충돌 방지)
     if (avatarViewMode === 'tower') controls.update();
     updateAvatarKeyboardMove(delta, elapsed);
     updateSelectionIndicator(elapsed);
     updateInteractHint();
-    updateJumpmap(elapsed, delta);
+    // 성능(점프맵): 점프맵 안이면 매 프레임(왁스 물리 부드럽게), 오피스면 진입 포탈만 저빈도(~20fps) 갱신.
+    if (inJumpmap) {
+        updateJumpmap(elapsed, delta);
+    } else {
+        _jumpAccum += delta;
+        if (_jumpAccum >= 0.05) { updateJumpmap(elapsed, _jumpAccum); _jumpAccum = 0; }
+    }
     updatePortals();
 
     // ── 내 캐릭터 키보드 이동 (WASD / 화살표) ──
@@ -4113,7 +4123,9 @@ function animate() {
     });
 
     document.getElementById('people-count').textContent = `${workingCount}/${presentCount}`;
-    updatePersonLabels(); // P5-D: 사람 레이블 위치 갱신
+    // 성능(오버레이): DOM 라벨·버튼·말풍선 위치 갱신은 ~30fps로 스로틀(렌더는 60fps 유지). 텍스트 오버레이라 체감 무영향.
+    _overlayAccum += delta;
+    if (_overlayAccum >= 0.033) { _overlayAccum = 0; updatePersonLabels(); }
     renderer.render(scene, camera);
 }
 
