@@ -600,6 +600,15 @@ function broadcastPeople(people) {
     clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
 }
 
+// 실시간 위치 전송(스로틀 ~150ms) 시 PUT마다 people.json 디스크 저장은 과부하 →
+// 디스크 저장만 디바운스(1s)하고 브로드캐스트는 즉시. 위치는 코스메틱이라 최대 1s 유실 허용.
+// 구조 변경(POST/DELETE)은 기존대로 즉시 savePeople 유지.
+let _savePeopleTimer = null;
+function savePeopleDebounced(people) {
+    if (_savePeopleTimer) clearTimeout(_savePeopleTimer);
+    _savePeopleTimer = setTimeout(() => { _savePeopleTimer = null; savePeople(people); }, 1000);
+}
+
 let people = loadPeople();
 
 /** GET /api/people — 사람 목록 반환 */
@@ -654,8 +663,8 @@ app.put('/api/people/:id', (req, res) => {
     if (idx === -1) return res.status(404).json({ error: '사람을 찾을 수 없습니다.' });
     // id는 불변(클라이언트가 id를 보내도 기존 id 유지). position 등 나머지 필드는 병합.
     people[idx] = { ...people[idx], ...req.body, id: people[idx].id };
-    savePeople(people);       // people.json 영속화 (재시작 후 복원)
-    broadcastPeople(people);  // 2D/3D 클라이언트에 즉시 반영
+    broadcastPeople(people);   // 2D/3D 클라이언트에 즉시 반영(실시간 이동)
+    savePeopleDebounced(people); // 디스크 영속화는 디바운스(잦은 위치 PUT 부하 방지)
     res.json(people[idx]);
 });
 

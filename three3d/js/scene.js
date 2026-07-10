@@ -3427,6 +3427,18 @@ function _scheduleSaveMyPosition() {
     _savePositionTimer = setTimeout(_saveMyPosition, 300);
 }
 
+// 이동 중 주기 전송(스로틀 ~150ms) — 꾹 눌러 달리는 동안에도 남들에게 실시간 추적되게 한다.
+// (기존 디바운스는 멈출 때만 보냈음 → 연속 이동이 남들 화면에서 지연 후 글라이드로 보였음)
+const _POS_SEND_INTERVAL_MS = 150;
+let _lastPosSentAt = 0;
+function _throttleSendPosition() {
+    const now = performance.now();
+    if (now - _lastPosSentAt >= _POS_SEND_INTERVAL_MS) {
+        _lastPosSentAt = now;
+        _saveMyPosition();
+    }
+}
+
 /**
  * 본인 아바타 수직 물리(점프·중력·착지) — 매 프레임 호출.
  * 지상: 발밑 표면(바닥·가구 상판)에 스냅(단차 STEP_UP 이내 오르내림, 가장자리 벗어나면 낙하 시작).
@@ -3688,7 +3700,7 @@ function animate() {
                     av.group.position.x += (mx / len) * SPEED * delta;
                     av.group.position.z += (mz / len) * SPEED * delta;
                     av.group.rotation.y = Math.atan2(mx / len, mz / len); // 이동 방향으로 캐릭터 회전
-                    _scheduleSaveMyPosition();
+                    _throttleSendPosition();   // 이동 중 주기 전송(실시간 추적)
                 }
             } else {
                 // [접근/1인칭] W/S = 바라보는 방향 전진·후진, A/D = 좌우 회전(방향 전환)
@@ -3704,7 +3716,7 @@ function animate() {
                     av.group.position.x += Math.sin(ry) * fwd * SPEED * delta;
                     av.group.position.z += Math.cos(ry) * fwd * SPEED * delta;
                 }
-                if (fwd !== 0 || turned) _scheduleSaveMyPosition();
+                if (fwd !== 0 || turned) _throttleSendPosition();   // 이동/회전 중 주기 전송
             }
         }
     }
