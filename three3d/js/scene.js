@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { createFactory, updateFactory, getPopScreens } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
 import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, updatePersonAnimation, createICharacter, createWatermelonCharacter, createBuriburimonCharacter, createPenguinCharacter } from './character.js';
@@ -4233,6 +4234,7 @@ function animate() {
     _overlayAccum += delta;
     if (_overlayAccum >= 0.033) { _overlayAccum = 0; updatePersonLabels(); }
     renderer.render(scene, camera);
+    updateHoloHud(elapsed);   // STEP2: 공장 홀로그램 HUD(CSS3D) 빌보드·근접·렌더
 }
 
 // ---- 사람 아바타 관리 (P5-D) ----
@@ -4274,6 +4276,132 @@ let _portalArmed = true;       // 전환 직후 포탈 반경을 벗어나기 �
 let _savedOffice = null;       // 입장 전 오피스 위치 복원용 { x, y, z, ry }
 let _portalHintEl = null;      // 포탈 근접 힌트 DOM
 let officeJumpTargets = null;  // 오피스 착지면 스냅샷
+
+// ============================================================
+// STEP 2 프로토타입 — 공장 홀로그램 HUD (CSS3D · AR 글라스 느낌)
+//  공장 POP 단말기 위 허공에 [현재 STEP 배너] + [FMB 상태 패널]을 띄우고 카메라를 향해 빌보드.
+//  아바타(없으면 카메라)가 공장 POP 근처(<16)일 때만 표시(글라스 on/off). 손가락 커서 재사용.
+//  ※ 프로토타입: 데이터는 데모값. 기존 POP 모달(모니터 클릭)과 병행 — 느낌 확인용.
+// ============================================================
+const HOLO_STEPS = ['작업지시 시작','자재투입','에이징 투입','실적등록','라벨발행','포장작업'];
+const HOLO_CIRC = ['①','②','③','④','⑤','⑥'];
+let holoState = { step: 2 };
+let holoReady = false, holoShown = false, holoAnchorSet = false;
+let holoRenderer, holoScene, holoLayer, holoBanner, holoStatus;
+const _holoAnchor = new THREE.Vector3(), _holoView = new THREE.Vector3();
+
+function _holoEl(html) { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstElementChild; }
+
+function _holoInjectStyle() {
+    if (document.getElementById('holo-style')) return;
+    const st = document.createElement('style'); st.id = 'holo-style';
+    st.textContent =
+        '#holo-layer{position:absolute;top:0;left:0;z-index:6;pointer-events:none;}' +
+        '.holo-panel{pointer-events:auto;background:rgba(9,17,31,0.74);border:1px solid rgba(96,165,255,0.55);border-radius:18px;' +
+        'box-shadow:0 0 26px rgba(76,141,255,0.38),inset 0 0 46px rgba(76,141,255,0.07);backdrop-filter:blur(3px);' +
+        'color:#E8EEF6;font-family:"Noto Sans KR","Malgun Gothic",sans-serif;cursor:none;user-select:none;}' +
+        '.holo-num{width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:900;' +
+        'background:#E5484D;color:#fff;border:2px solid #FF6B6B;animation:holoPulse 1.5s ease-out infinite;}' +
+        '.holo-chip{font-size:13px;font-weight:800;color:#4ED592;background:rgba(53,194,117,0.16);border-radius:7px;padding:5px 12px;}' +
+        '.holo-metric{background:rgba(24,37,61,0.65);border:1px solid rgba(96,165,255,0.18);border-radius:12px;padding:10px 12px;}' +
+        '.holo-metric .k{font-size:12px;font-weight:700;color:#8FB6F0;}.holo-metric .v{font-size:28px;font-weight:900;line-height:1.1;}' +
+        '.holo-next{margin-top:14px;width:100%;height:56px;border:none;border-radius:14px;cursor:none;color:#fff;font-family:inherit;' +
+        'font-size:18px;font-weight:800;background:linear-gradient(180deg,#4E8EF7,#2F6BE0);box-shadow:0 6px 20px rgba(47,107,224,0.4);}' +
+        '@keyframes holoPulse{0%{box-shadow:0 0 0 0 rgba(255,86,86,0.6)}70%{box-shadow:0 0 0 14px rgba(255,86,86,0)}100%{box-shadow:0 0 0 0 rgba(255,86,86,0)}}' +
+        '@keyframes holoIdleTap{0%,100%{transform:translateY(0)}50%{transform:translateY(3px)}}' +
+        '@keyframes holoTapNow{0%{transform:translateY(0)}35%{transform:translateY(11px) scale(0.9)}100%{transform:translateY(0)}}' +
+        '#holo-finger{position:fixed;left:0;top:0;font-size:40px;line-height:1;pointer-events:none;z-index:2147483000;display:none;' +
+        'filter:drop-shadow(0 3px 4px rgba(0,0,0,0.55));animation:holoIdleTap 1.1s ease-in-out infinite;}' +
+        '#holo-finger.holo-tap{animation:holoTapNow 0.26s ease-out;}';
+    document.head.appendChild(st);
+}
+
+function _holoBannerHtml() {
+    const s = holoState.step;
+    return '<div class="holo-panel" style="width:560px;padding:20px 30px;text-align:center;">' +
+        '<div style="font-size:14px;letter-spacing:4px;color:#6FA5F5;font-weight:800;">CURRENT PROCESS · 현재 공정</div>' +
+        '<div style="display:flex;align-items:center;justify-content:center;gap:18px;margin-top:10px;">' +
+        '<span class="holo-num">' + HOLO_CIRC[s] + '</span>' +
+        '<span style="font-size:44px;font-weight:900;color:#fff;letter-spacing:1px;">' + HOLO_STEPS[s] + '</span>' +
+        '</div></div>';
+}
+function _holoStatusHtml() {
+    return '<div class="holo-panel" style="width:480px;padding:20px 24px;">' +
+        '<div style="display:flex;align-items:center;gap:10px;"><span class="holo-chip">● 생산 중</span>' +
+        '<span style="font-size:24px;font-weight:900;color:#fff;">RTR0226A-999</span></div>' +
+        '<div style="font-size:14px;color:#8FB6F0;margin-top:4px;">DL3 TIE ROD ASSY RH · LINE 2151 엔드모듈라인</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px;">' +
+        '<div class="holo-metric"><div class="k">양품</div><div class="v" style="color:#fff;">717</div></div>' +
+        '<div class="holo-metric"><div class="k">불량</div><div class="v" style="color:#F26D6D;">3</div></div>' +
+        '<div class="holo-metric"><div class="k">잔여</div><div class="v" style="color:#E8B04B;">0</div></div>' +
+        '<div class="holo-metric"><div class="k">달성률</div><div class="v" style="color:#4ED592;">100%</div></div>' +
+        '</div>' +
+        '<button class="holo-next" data-holo="next">▶ 다음 공정 진행</button></div>';
+}
+
+function _holoWireFinger(panelEl) {
+    const f = document.getElementById('holo-finger');
+    panelEl.addEventListener('mousemove', (e) => { f.style.left = (e.clientX - 18) + 'px'; f.style.top = (e.clientY - 6) + 'px'; });
+    panelEl.addEventListener('mouseenter', () => { f.style.display = 'block'; });
+    panelEl.addEventListener('mouseleave', () => { f.style.display = 'none'; });
+    panelEl.addEventListener('pointerdown', () => { f.classList.remove('holo-tap'); void f.offsetWidth; f.classList.add('holo-tap'); }, true);
+}
+
+function _holoRenderPanels() {
+    holoBanner.element.innerHTML = '';  holoBanner.element.appendChild(_holoEl(_holoBannerHtml()));
+    holoStatus.element.innerHTML = '';  holoStatus.element.appendChild(_holoEl(_holoStatusHtml()));
+    // 다음 공정 버튼
+    const nextBtn = holoStatus.element.querySelector('[data-holo="next"]');
+    if (nextBtn) nextBtn.addEventListener('click', () => { holoState.step = (holoState.step + 1) % HOLO_STEPS.length; _holoRenderPanels(); });
+    // 손가락 커서 배선(패널 루트에)
+    _holoWireFinger(holoBanner.element.firstElementChild);
+    _holoWireFinger(holoStatus.element.firstElementChild);
+}
+
+function _holoSetup() {
+    _holoInjectStyle();
+    holoRenderer = new CSS3DRenderer();
+    holoRenderer.setSize(innerWidth, innerHeight);
+    holoLayer = holoRenderer.domElement; holoLayer.id = 'holo-layer';
+    document.body.appendChild(holoLayer);
+    holoLayer.style.display = 'none';
+    // 손가락 커서
+    const f = document.createElement('div'); f.id = 'holo-finger'; f.textContent = '👆'; document.body.appendChild(f);
+
+    holoScene = new THREE.Scene();
+    const bWrap = document.createElement('div'); bWrap.style.cssText = 'width:560px;';
+    const sWrap = document.createElement('div'); sWrap.style.cssText = 'width:480px;';
+    holoBanner = new CSS3DObject(bWrap); holoStatus = new CSS3DObject(sWrap);
+    holoBanner.scale.setScalar(0.0075); holoStatus.scale.setScalar(0.0075);
+    holoScene.add(holoBanner); holoScene.add(holoStatus);
+    _holoRenderPanels();
+    holoReady = true;
+}
+_holoSetup();
+
+/** 매 프레임: 근접 판정 → 표시/숨김, 카메라 향해 빌보드, CSS3D 렌더. */
+function updateHoloHud() {
+    if (!holoReady) return;
+    if (!holoAnchorSet) {
+        const ps = getPopScreens();
+        if (!ps.length) return;
+        ps[0].getWorldPosition(_holoAnchor);
+        holoBanner.position.set(_holoAnchor.x, _holoAnchor.y + 3.0, _holoAnchor.z);
+        holoStatus.position.set(_holoAnchor.x, _holoAnchor.y + 1.15, _holoAnchor.z);
+        holoAnchorSet = true;
+    }
+    const av = myPersonId && personAvatarMap.get(myPersonId);
+    let vx, vz;
+    if (av) { av.group.getWorldPosition(_holoView); vx = _holoView.x; vz = _holoView.z; }
+    else { vx = camera.position.x; vz = camera.position.z; }
+    const dx = vx - _holoAnchor.x, dz = vz - _holoAnchor.z;
+    const near = Math.sqrt(dx * dx + dz * dz) < 16;
+    if (near !== holoShown) { holoShown = near; holoLayer.style.display = near ? '' : 'none'; }
+    if (!holoShown) return;
+    holoBanner.quaternion.copy(camera.quaternion);   // 카메라 향해 빌보드
+    holoStatus.quaternion.copy(camera.quaternion);
+    holoRenderer.render(holoScene, camera);
+}
 
 animate();
 
@@ -7013,7 +7141,7 @@ window.__jmDebug = {
     isWaxStarted,
 };
 
-window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); if (holoRenderer) holoRenderer.setSize(innerWidth, innerHeight); });
 // P3(blackwatermelon) '내 아바타 이동'용 키셋 — Gahyun의 MOVE_KEYS(선택아바타·화살표전용)와 이름 분리(중복선언 방지).
 const MY_MOVE_KEYS = new Set(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
 
