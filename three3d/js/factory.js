@@ -914,24 +914,7 @@ export function createFactory(scene) {
         // === 투입 구역 ===
         // 라인별로 자재 큐(외부) 쪽 z를 정함 — 큐와 정렬된 작업자가 포터
         const isITR = lineName === 'ITR';
-        // 포터(왼쪽): 자재 큐 ↔ 라인 컨베이어 시작점 왕복
-        const porterZ      = lineZ + (isITR ? -2.0 : 2.0);
-        const porterFaceY  = isITR ? 0 : Math.PI;
-        const porterIdleX  = isITR ? -7 : -5;
-        const porterPickupX = -11;     // 공장 외벽 바깥(자재 큐 영역)
-        const porterObj = buildWorker(group, porterIdleX, porterZ, porterFaceY, helmetColors[0]);
-        // 운반용 박스(처음엔 숨김)
-        const carryColor = isITR ? 0xFF7043 : 0x42A5F5;
-        const carryBox = box(0.45, 0.3, 0.45, carryColor);
-        carryBox.position.set(0, 1.0, 0.4);   // 가슴 앞쪽
-        carryBox.visible = false;
-        porterObj.group.add(carryBox);
-        porters.push({
-            person: porterObj, line: lineName, lineZ,
-            idleX: porterIdleX, pickupX: porterPickupX,
-            z: porterZ, faceY: porterFaceY, carryBox,
-            phaseStart: Math.random() * 6.0,
-        });
+        // 포터(사람 자재 운반) 제거 — STEP2: 라인 자재 이동은 전부 AGV/견인차가 담당(scene.js 입하 물류).
 
         // 검수자(오른쪽): 라인 앞에 서서 지나가는 제품 검수
         const inspZ     = lineZ + (isITR ? 2.0 : -2.0);

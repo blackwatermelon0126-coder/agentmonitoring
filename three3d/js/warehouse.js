@@ -45,6 +45,7 @@ const materials = [];           // 흐르는 박스: { mesh, spawnT, line }
 let nextLineToggle = 0;
 let lastSpawnT = -100;
 let lastCycleIdx = -1;
+let _flowOff = false;   // STEP2: 입하 물류를 검사반 앞 입하장으로 이관 → 창고 자체 트럭/지게차/자재흐름 중지
 
 // ---- 지게차 (forklift) ----
 let forkliftObj = null;          // { group, mast, forks, cargo }
@@ -779,7 +780,18 @@ export function createWarehouse(scene) {
 // ============================================
 // 매 프레임 업데이트
 // ============================================
+/** STEP2: 창고 자체 트럭/지게차/자재흐름 중지(입하 물류를 검사반 앞 입하장으로 이관). 창고 건물·랙은 정적 유지. */
+export function disableWarehouseFlow() {
+    _flowOff = true;
+    if (truckObj) truckObj.visible = false;
+    if (forkliftObj && forkliftObj.group) forkliftObj.group.visible = false;
+    for (const m of materials) { if (m.mesh && warehouseGroup) warehouseGroup.remove(m.mesh); }
+    materials.length = 0;
+    if (typeof droppedPallets !== 'undefined') { for (const d of droppedPallets) { if (d.mesh && warehouseGroup) warehouseGroup.remove(d.mesh); } droppedPallets.length = 0; }
+}
+
 export function updateWarehouse(delta, elapsed) {
+    if (_flowOff) return;   // 입하 물류 이관됨 — 창고 애니메이션 중지(정적 씬)
     // ---- 트럭 사이클 ----
     const cycleT = elapsed % CYCLE.waitEnd;
     const cycleIdx = Math.floor(elapsed / CYCLE.waitEnd);

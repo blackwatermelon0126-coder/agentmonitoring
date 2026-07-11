@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { createFactory, updateFactory, getPopScreens, getLineAnchors, factoryLineNeedsPallet, factoryReplenishLine } from './factory.js';
-import { createWarehouse, updateWarehouse } from './warehouse.js';
+import { createWarehouse, updateWarehouse, disableWarehouseFlow } from './warehouse.js';
 import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, updatePersonAnimation, createICharacter, createWatermelonCharacter, createBuriburimonCharacter, createPenguinCharacter } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
 import { initLunchGame, triggerLunchGame } from './lunchgame.js';
@@ -344,6 +344,7 @@ createPath(-22, 25, 14, 3, 0x90A4AE);
 createPath(-32, 22, 10, 3, 0x90A4AE); // 창고 ↔ 공장 진입로
 const factoryGroup = createFactory(scene);
 const warehouseGroup = createWarehouse(scene);
+disableWarehouseFlow();   // STEP2: 창고 자체 트럭/지게차/자재흐름 중지 → 입하 물류로 일원화
 buildQCStation(warehouseGroup);   // 물류창고 옆 QC 검사반 (STEP2)
 // buildInboundLogistics(...) 호출은 아래 inbound 블록(let inbound 선언) 뒤에서 실행 — TDZ 방지
 
@@ -475,9 +476,20 @@ function buildInboundLogistics(parent) {
     };
 }
 
-// 차량 1대의 라인 보충 운반 상태머신 (AGV·견인차 공용)
+// 입하장↔공장 통로 웨이포인트(warehouseGroup-local): 남쪽 레인으로 건물 우회 후 공장 라인 접근.
+const IB_LANE = [{ x: -46, z: 35 }, { x: -26, z: 35 }];
+
+// 경로(웨이포인트 배열)를 순서대로 추종. 마지막 도달 시 true.
+function _ibFollowPath(ib, key, grp, spd, dt) {
+    const path = ib[key + 'Path']; if (!path || !path.length) return true;
+    const wp = path[ib[key + 'Pi']];
+    if (_ibMove(grp, wp.x, wp.z, spd, dt)) { ib[key + 'Pi']++; if (ib[key + 'Pi'] >= path.length) return true; }
+    return false;
+}
+
+// 차량 1대의 라인 보충 운반 상태머신 (AGV·견인차 공용). 통로 웨이포인트로 이동(건물 통과 방지).
 function _ibVehicleDeliver(ib, key, grp, dt, spd, isAgv) {
-    const stKey = key + 'State', tKey = key + 'T', lnKey = key + 'Line';
+    const stKey = key + 'State', tKey = key + 'T', lnKey = key + 'Line', pKey = key + 'Path', piKey = key + 'Pi';
     const home = ib.home[key];
     switch (ib[stKey]) {
         case 'idle':
@@ -491,24 +503,26 @@ function _ibVehicleDeliver(ib, key, grp, dt, spd, isAgv) {
             }
             break;
         case 'load':
-            ib[tKey] -= dt; if (ib[tKey] <= 0) ib[stKey] = 'toLine';
+            ib[tKey] -= dt;
+            if (ib[tKey] <= 0) {
+                const tgt = _lineLocalTarget(ib.parent, ib[lnKey]);
+                if (!tgt) { ib[pKey] = [IB_LANE[1], IB_LANE[0], home]; ib[piKey] = 0; ib[stKey] = 'return'; }
+                else { ib[pKey] = [IB_LANE[0], IB_LANE[1], { x: tgt.x, z: tgt.z + 4 }]; ib[piKey] = 0; ib[stKey] = 'toLine'; }
+            }
             break;
-        case 'toLine': {
-            const tgt = _lineLocalTarget(ib.parent, ib[lnKey]);
-            if (!tgt) { ib[stKey] = 'return'; }
-            else if (_ibMove(grp, tgt.x, tgt.z + 2.5, spd, dt)) { ib[stKey] = 'drop'; ib[tKey] = 0.6; }
+        case 'toLine':
+            if (_ibFollowPath(ib, key, grp, spd, dt)) { ib[stKey] = 'drop'; ib[tKey] = 0.6; }
             break;
-        }
         case 'drop':
             ib[tKey] -= dt;
             if (ib[tKey] <= 0) {
                 factoryReplenishLine(ib[lnKey]);
                 if (isAgv && ib.agv.carried) { ib.agv.group.remove(ib.agv.carried); ib.agv.carried = null; }
-                ib[stKey] = 'return';
+                ib[pKey] = [IB_LANE[1], IB_LANE[0], home]; ib[piKey] = 0; ib[stKey] = 'return';
             }
             break;
         case 'return':
-            if (_ibMove(grp, home.x, home.z, spd, dt)) { ib[stKey] = 'idle'; ib[tKey] = isAgv ? 2.0 : 3.5; }
+            if (_ibFollowPath(ib, key, grp, spd, dt)) { ib[stKey] = 'idle'; ib[tKey] = isAgv ? 2.0 : 3.5; }
             break;
     }
 }
