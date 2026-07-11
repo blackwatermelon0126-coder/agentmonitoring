@@ -42,6 +42,12 @@ const robotArms = [];
 const agingChambers = [];
 const popMonitors = [];
 const popScreens = [];        // 클릭 가능한 POP 화면/베젤 메쉬 (레이캐스트 픽 대상) — scene.js가 getPopScreens()로 조회
+const lineAnchors = [];       // 라인별 홀로그램 HUD 앵커(월드 좌표 계산용) — scene.js getLineAnchors()로 조회
+// 라인 식별 메타 (ITR/OTR 물리 라인 → 라인번호·이름·액센트색). 멀티라인 HUD 구분용.
+const LINE_META = {
+    ITR: { lineId: '2151', lineName: '엔드모듈라인',   accent: '#4C8DFF' },
+    OTR: { lineId: '2152', lineName: '엔드모듈라인 2', accent: '#35C275' },
+};
 const porters = [];          // 자재 운반 작업자 (왼쪽 입력): { person, line, lineZ, idleX, pickupX, z, faceY, carryBox, phaseStart }
 const inspectors = [];       // 검수 작업자 (오른쪽 입력): { person, line, x, z, faceY, phase }
 
@@ -701,6 +707,9 @@ function createProductMesh(lineName) {
 /** 클릭 가능한 POP 화면/베젤 메쉬 목록 반환 (scene.js 레이캐스트용). createFactory 이후 유효. */
 export function getPopScreens() { return popScreens; }
 
+/** 라인별 HUD 앵커 목록 반환 [{lineId, lineName, accent, lineKey, obj}]. createFactory 이후 유효. */
+export function getLineAnchors() { return lineAnchors; }
+
 export function createFactory(scene) {
     const group = new THREE.Group();
     group.name = 'CTR_Factory';
@@ -713,6 +722,12 @@ export function createFactory(scene) {
         buildAgingChamber(group, lineZ, lineName);
         buildWorkstation(group, FLOW.start + 1.5, lineZ, 'input');
         buildWorkstation(group, FLOW.end - 1.5, lineZ, 'output');
+
+        // 라인별 홀로그램 HUD 앵커 — 라인 투입부 위 허공 (scene.js가 월드좌표로 변환해 패널 배치)
+        const _lineAnc = new THREE.Object3D();
+        _lineAnc.position.set(FLOW.start + 1.0, 1.8, lineZ);
+        group.add(_lineAnc);
+        lineAnchors.push({ ...LINE_META[lineName], lineKey: lineName, obj: _lineAnc });
 
         // 로봇 팔: 투입쪽 2개, 에이징쪽 2개, 후반부 1개
         // 투입 (전반부): x = -7, -5

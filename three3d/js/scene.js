@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
-import { createFactory, updateFactory, getPopScreens } from './factory.js';
+import { createFactory, updateFactory, getPopScreens, getLineAnchors } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
 import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, updatePersonAnimation, createICharacter, createWatermelonCharacter, createBuriburimonCharacter, createPenguinCharacter } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
@@ -4285,10 +4285,15 @@ let officeJumpTargets = null;  // 오피스 착지면 스냅샷
 // ============================================================
 const HOLO_STEPS = ['작업지시 시작','자재투입','에이징 투입','실적등록','라벨발행','포장작업'];
 const HOLO_CIRC = ['①','②','③','④','⑤','⑥'];
-let holoState = { step: 2 };
-let holoReady = false, holoShown = false, holoAnchorSet = false;
+// 라인별 데모 데이터/상태 (실데이터 연동 전) — lineId로 구분. step은 라인마다 독립.
+const HOLO_LINE = {
+    '2151': { name: '엔드모듈라인',   accent: '#4C8DFF', item: 'RTR0226A-999', desc: 'DL3 TIE ROD ASSY RH', good: 717, bad: 3, remain: 0,   rate: '100%', step: 2 },
+    '2152': { name: '엔드모듈라인 2', accent: '#35C275', item: 'RTR0311B-100', desc: 'DL3 TIE ROD ASSY LH', good: 540, bad: 1, remain: 180, rate: '75%',  step: 1 },
+};
+let holoReady = false, holoCurLine = null;
 let holoRenderer, holoScene, holoLayer, holoBanner, holoStatus;
-const _holoAnchor = new THREE.Vector3(), _holoView = new THREE.Vector3();
+let holoLines = [];   // [{ lineId, name, accent, obj(앵커), plate(CSS3DObject 명패) }]
+const _holoView = new THREE.Vector3(), _holoWp = new THREE.Vector3();
 
 function _holoEl(html) { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstElementChild; }
 
@@ -4298,8 +4303,12 @@ function _holoInjectStyle() {
     st.textContent =
         '#holo-layer{position:absolute;top:0;left:0;z-index:6;pointer-events:none;}' +
         '.holo-panel{pointer-events:auto;background:rgba(9,17,31,0.74);border:1px solid rgba(96,165,255,0.55);border-radius:18px;' +
-        'box-shadow:0 0 26px rgba(76,141,255,0.38),inset 0 0 46px rgba(76,141,255,0.07);backdrop-filter:blur(3px);' +
+        'box-shadow:0 0 26px rgba(76,141,255,0.34),inset 0 0 46px rgba(76,141,255,0.07);backdrop-filter:blur(3px);' +
         'color:#E8EEF6;font-family:"Noto Sans KR","Malgun Gothic",sans-serif;cursor:none;user-select:none;}' +
+        '.holo-plate{pointer-events:none;display:inline-flex;align-items:center;gap:8px;background:rgba(7,13,24,0.82);' +
+        'border:1.5px solid #4C8DFF;border-radius:99px;padding:7px 16px;font-family:"Noto Sans KR","Malgun Gothic",sans-serif;' +
+        'font-size:22px;font-weight:900;color:#fff;letter-spacing:1px;white-space:nowrap;}' +
+        '.holo-dot{width:11px;height:11px;border-radius:50%;box-shadow:0 0 8px currentColor;}' +
         '.holo-num{width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:900;' +
         'background:#E5484D;color:#fff;border:2px solid #FF6B6B;animation:holoPulse 1.5s ease-out infinite;}' +
         '.holo-chip{font-size:13px;font-weight:800;color:#4ED592;background:rgba(53,194,117,0.16);border-radius:7px;padding:5px 12px;}' +
@@ -4316,27 +4325,32 @@ function _holoInjectStyle() {
     document.head.appendChild(st);
 }
 
-function _holoBannerHtml() {
-    const s = holoState.step;
-    return '<div class="holo-panel" style="width:560px;padding:20px 30px;text-align:center;">' +
-        '<div style="font-size:14px;letter-spacing:4px;color:#6FA5F5;font-weight:800;">CURRENT PROCESS · 현재 공정</div>' +
+function _holoBannerHtml(lineId, d) {
+    const s = d.step;
+    return '<div class="holo-panel" style="width:560px;padding:18px 30px;text-align:center;border-color:' + d.accent + ';box-shadow:0 0 30px ' + d.accent + '55,inset 0 0 46px ' + d.accent + '12;">' +
+        '<div style="font-size:15px;letter-spacing:3px;font-weight:900;color:' + d.accent + ';">LINE ' + lineId + ' · ' + d.name + '</div>' +
         '<div style="display:flex;align-items:center;justify-content:center;gap:18px;margin-top:10px;">' +
         '<span class="holo-num">' + HOLO_CIRC[s] + '</span>' +
-        '<span style="font-size:44px;font-weight:900;color:#fff;letter-spacing:1px;">' + HOLO_STEPS[s] + '</span>' +
+        '<span style="font-size:42px;font-weight:900;color:#fff;letter-spacing:1px;">' + HOLO_STEPS[s] + '</span>' +
         '</div></div>';
 }
-function _holoStatusHtml() {
-    return '<div class="holo-panel" style="width:480px;padding:20px 24px;">' +
+function _holoStatusHtml(lineId, d) {
+    return '<div class="holo-panel" style="width:480px;padding:20px 24px;border-color:' + d.accent + ';">' +
         '<div style="display:flex;align-items:center;gap:10px;"><span class="holo-chip">● 생산 중</span>' +
-        '<span style="font-size:24px;font-weight:900;color:#fff;">RTR0226A-999</span></div>' +
-        '<div style="font-size:14px;color:#8FB6F0;margin-top:4px;">DL3 TIE ROD ASSY RH · LINE 2151 엔드모듈라인</div>' +
+        '<span style="font-size:24px;font-weight:900;color:#fff;">' + d.item + '</span></div>' +
+        '<div style="font-size:14px;color:#8FB6F0;margin-top:4px;">' + d.desc + ' · LINE ' + lineId + ' ' + d.name + '</div>' +
         '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px;">' +
-        '<div class="holo-metric"><div class="k">양품</div><div class="v" style="color:#fff;">717</div></div>' +
-        '<div class="holo-metric"><div class="k">불량</div><div class="v" style="color:#F26D6D;">3</div></div>' +
-        '<div class="holo-metric"><div class="k">잔여</div><div class="v" style="color:#E8B04B;">0</div></div>' +
-        '<div class="holo-metric"><div class="k">달성률</div><div class="v" style="color:#4ED592;">100%</div></div>' +
+        '<div class="holo-metric"><div class="k">양품</div><div class="v" style="color:#fff;">' + d.good + '</div></div>' +
+        '<div class="holo-metric"><div class="k">불량</div><div class="v" style="color:#F26D6D;">' + d.bad + '</div></div>' +
+        '<div class="holo-metric"><div class="k">잔여</div><div class="v" style="color:#E8B04B;">' + d.remain + '</div></div>' +
+        '<div class="holo-metric"><div class="k">달성률</div><div class="v" style="color:#4ED592;">' + d.rate + '</div></div>' +
         '</div>' +
         '<button class="holo-next" data-holo="next">▶ 다음 공정 진행</button></div>';
+}
+function _holoPlateHtml(lineId, d) {
+    const c = (d && d.accent) || '#4C8DFF';
+    return '<div class="holo-plate" style="border-color:' + c + ';box-shadow:0 0 16px ' + c + '55;">' +
+        '<span class="holo-dot" style="color:' + c + ';background:' + c + ';"></span>LINE ' + lineId + '</div>';
 }
 
 function _holoWireFinger(panelEl) {
@@ -4348,12 +4362,12 @@ function _holoWireFinger(panelEl) {
 }
 
 function _holoRenderPanels() {
-    holoBanner.element.innerHTML = '';  holoBanner.element.appendChild(_holoEl(_holoBannerHtml()));
-    holoStatus.element.innerHTML = '';  holoStatus.element.appendChild(_holoEl(_holoStatusHtml()));
-    // 다음 공정 버튼
+    if (!holoCurLine) return;
+    const d = HOLO_LINE[holoCurLine];
+    holoBanner.element.innerHTML = ''; holoBanner.element.appendChild(_holoEl(_holoBannerHtml(holoCurLine, d)));
+    holoStatus.element.innerHTML = ''; holoStatus.element.appendChild(_holoEl(_holoStatusHtml(holoCurLine, d)));
     const nextBtn = holoStatus.element.querySelector('[data-holo="next"]');
-    if (nextBtn) nextBtn.addEventListener('click', () => { holoState.step = (holoState.step + 1) % HOLO_STEPS.length; _holoRenderPanels(); });
-    // 손가락 커서 배선(패널 루트에)
+    if (nextBtn) nextBtn.addEventListener('click', () => { d.step = (d.step + 1) % HOLO_STEPS.length; _holoRenderPanels(); });
     _holoWireFinger(holoBanner.element.firstElementChild);
     _holoWireFinger(holoStatus.element.firstElementChild);
 }
@@ -4365,7 +4379,6 @@ function _holoSetup() {
     holoLayer = holoRenderer.domElement; holoLayer.id = 'holo-layer';
     document.body.appendChild(holoLayer);
     holoLayer.style.display = 'none';
-    // 손가락 커서
     const f = document.createElement('div'); f.id = 'holo-finger'; f.textContent = '👆'; document.body.appendChild(f);
 
     holoScene = new THREE.Scene();
@@ -4373,34 +4386,57 @@ function _holoSetup() {
     const sWrap = document.createElement('div'); sWrap.style.cssText = 'width:480px;';
     holoBanner = new CSS3DObject(bWrap); holoStatus = new CSS3DObject(sWrap);
     holoBanner.scale.setScalar(0.0075); holoStatus.scale.setScalar(0.0075);
+    holoBanner.visible = false; holoStatus.visible = false;
     holoScene.add(holoBanner); holoScene.add(holoStatus);
-    _holoRenderPanels();
+
+    // 라인별 명패 생성 (factory.js getLineAnchors) — 라인을 색+번호로 상시 구분
+    holoLines = getLineAnchors().map(a => {
+        const plate = new CSS3DObject(_holoEl(_holoPlateHtml(a.lineId, HOLO_LINE[a.lineId] || { accent: a.accent })));
+        plate.scale.setScalar(0.006); plate.visible = false;
+        holoScene.add(plate);
+        return { lineId: a.lineId, name: a.lineName, accent: a.accent, obj: a.obj, plate };
+    });
     holoReady = true;
 }
 _holoSetup();
 
-/** 매 프레임: 근접 판정 → 표시/숨김, 카메라 향해 빌보드, CSS3D 렌더. */
+/** 매 프레임: 라인 명패 배치/표시 + 가장 가까운 라인에 풀 HUD 앵커·표시. 카메라 향해 빌보드. */
 function updateHoloHud() {
-    if (!holoReady) return;
-    if (!holoAnchorSet) {
-        const ps = getPopScreens();
-        if (!ps.length) return;
-        ps[0].getWorldPosition(_holoAnchor);
-        holoBanner.position.set(_holoAnchor.x, _holoAnchor.y + 3.0, _holoAnchor.z);
-        holoStatus.position.set(_holoAnchor.x, _holoAnchor.y + 1.15, _holoAnchor.z);
-        holoAnchorSet = true;
-    }
+    if (!holoReady || !holoLines.length) return;
     const av = myPersonId && personAvatarMap.get(myPersonId);
     let vx, vz;
     if (av) { av.group.getWorldPosition(_holoView); vx = _holoView.x; vz = _holoView.z; }
     else { vx = camera.position.x; vz = camera.position.z; }
-    const dx = vx - _holoAnchor.x, dz = vz - _holoAnchor.z;
-    const near = Math.sqrt(dx * dx + dz * dz) < 16;
-    if (near !== holoShown) { holoShown = near; holoLayer.style.display = near ? '' : 'none'; }
-    if (!holoShown) return;
-    holoBanner.quaternion.copy(camera.quaternion);   // 카메라 향해 빌보드
-    holoStatus.quaternion.copy(camera.quaternion);
-    holoRenderer.render(holoScene, camera);
+
+    let anyVisible = false, nearest = null, nearestD = Infinity, nwx = 0, nwy = 0, nwz = 0;
+    for (const L of holoLines) {
+        L.obj.getWorldPosition(_holoWp);
+        const dx = vx - _holoWp.x, dz = vz - _holoWp.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        const plateOn = dist < 34;                 // 명패: 외곽 범위 안이면 표시(라인 식별)
+        L.plate.visible = plateOn;
+        if (plateOn) {
+            L.plate.position.set(_holoWp.x, _holoWp.y + 2.6, _holoWp.z);
+            L.plate.quaternion.copy(camera.quaternion);
+            anyVisible = true;
+        }
+        if (dist < nearestD) { nearestD = dist; nearest = L; nwx = _holoWp.x; nwy = _holoWp.y; nwz = _holoWp.z; }
+    }
+
+    if (nearest && nearestD < 16) {                // 가장 가까운 라인 → 풀 HUD
+        if (holoCurLine !== nearest.lineId) { holoCurLine = nearest.lineId; _holoRenderPanels(); }
+        holoBanner.position.set(nwx, nwy + 3.0, nwz);
+        holoStatus.position.set(nwx, nwy + 1.15, nwz);
+        holoBanner.quaternion.copy(camera.quaternion);
+        holoStatus.quaternion.copy(camera.quaternion);
+        holoBanner.visible = true; holoStatus.visible = true;
+        anyVisible = true;
+    } else {
+        holoBanner.visible = false; holoStatus.visible = false;
+    }
+
+    holoLayer.style.display = anyVisible ? '' : 'none';
+    if (anyVisible) holoRenderer.render(holoScene, camera);
 }
 
 animate();
