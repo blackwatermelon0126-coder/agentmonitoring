@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
-import { createFactory, updateFactory, getPopScreens, getLineAnchors } from './factory.js';
+import { createFactory, updateFactory, getPopScreens, getLineAnchors, factoryLineNeedsPallet, factoryReplenishLine } from './factory.js';
 import { createWarehouse, updateWarehouse } from './warehouse.js';
 import { createDetailedPerson, createDetailedPerson as _createDetailedPersonForStairs, traitsFromSeed, updatePersonAnimation, createICharacter, createWatermelonCharacter, createBuriburimonCharacter, createPenguinCharacter } from './character.js';
 import { buildTeamsDeeplink } from './deeplink.js';
@@ -345,6 +345,7 @@ createPath(-32, 22, 10, 3, 0x90A4AE); // 창고 ↔ 공장 진입로
 const factoryGroup = createFactory(scene);
 const warehouseGroup = createWarehouse(scene);
 buildQCStation(warehouseGroup);   // 물류창고 옆 QC 검사반 (STEP2)
+// buildInboundLogistics(...) 호출은 아래 inbound 블록(let inbound 선언) 뒤에서 실행 — TDZ 방지
 
 // 물류창고 옆 QC 검사반 — 간판 + 검사대 2대(측정 게이지·샘플) + QC 작업자 2명.
 function buildQCStation(parent) {
@@ -372,6 +373,165 @@ function buildQCStation(parent) {
     }
     parent.add(g);
 }
+
+// ============================================================
+// STEP2 — 입하 물류 (검사반 앞 입하장 중심)
+//  트럭 완전 출입(맵 밖↔입하장) · 지게차 2대 하역 · AGV+견인차가 팔레트를 공장 라인으로 운반.
+//  warehouseGroup(QC와 동일 프레임) 자식으로 구성. 공장 라인 목표는 worldToLocal로 변환해 횡단 운반.
+// ============================================================
+let inbound = null;
+const _ibV = new THREE.Vector3();
+function _ibBox(w, h, d, c, extra) { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial(Object.assign({ color: c, roughness: 0.7, metalness: 0.15 }, extra || {}))); m.castShadow = true; m.receiveShadow = true; return m; }
+function _ibCyl(r, h, c) { const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 12), new THREE.MeshStandardMaterial({ color: c })); m.castShadow = true; return m; }
+function _ibPallet() {
+    const g = new THREE.Group();
+    const deck = _ibBox(1.0, 0.1, 0.8, 0x8D6E63); deck.position.y = 0.12; g.add(deck);
+    for (let i = 0; i < 2; i++) { const c = _ibBox(0.42, 0.42, 0.62, 0xB0BEC5, { roughness: 0.85 }); c.position.set(-0.24 + i * 0.48, 0.4, 0); g.add(c); }
+    return g;
+}
+function _ibForklift(c) {
+    const g = new THREE.Group();
+    const body = _ibBox(0.9, 0.55, 1.4, c); body.position.y = 0.5; g.add(body);
+    for (const xo of [-0.38, 0.38]) for (const zo of [-0.1, 0.5]) { const p = _ibBox(0.05, 0.9, 0.05, 0x424242); p.position.set(xo, 1.15, zo); g.add(p); }
+    const roof = _ibBox(0.85, 0.06, 0.7, 0x424242); roof.position.set(0, 1.6, 0.2); g.add(roof);
+    const mast = new THREE.Group(); mast.position.set(0, 0, 0.75);
+    for (const xo of [-0.3, 0.3]) { const b = _ibBox(0.06, 1.5, 0.06, 0x616161); b.position.set(xo, 0.75, 0); mast.add(b); }
+    const carriage = new THREE.Group();
+    for (const xo of [-0.22, 0.22]) { const fk = _ibBox(0.08, 0.05, 0.7, 0x9E9E9E); fk.position.set(xo, 0, 0.35); carriage.add(fk); }
+    carriage.position.y = 0.25; mast.add(carriage); g.add(mast);
+    for (const xo of [-0.42, 0.42]) for (const zo of [-0.45, 0.45]) { const w = _ibCyl(0.22, 0.16, 0x212121); w.rotation.z = Math.PI / 2; w.position.set(xo, 0.22, zo); g.add(w); }
+    return { group: g, carriage };
+}
+function _ibTruck() {
+    const g = new THREE.Group();
+    const trailer = _ibBox(2.4, 2.2, 6.2, 0xECEFF1); trailer.position.set(0, 1.6, 0.5); g.add(trailer);
+    const cab = _ibBox(2.3, 1.8, 2.0, 0x1565C0); cab.position.set(0, 1.4, -3.4); g.add(cab);
+    const wind = _ibBox(2.1, 0.9, 0.1, 0x111820, { metalness: 0.5 }); wind.position.set(0, 1.85, -4.35); g.add(wind);
+    for (const zo of [-3.6, -0.5, 1.0, 2.6]) for (const xo of [-1.15, 1.15]) { const w = _ibCyl(0.45, 0.35, 0x111111); w.rotation.z = Math.PI / 2; w.position.set(xo, 0.45, zo); g.add(w); }
+    return g;
+}
+function _ibAGV() {
+    const g = new THREE.Group();
+    const plat = _ibBox(1.1, 0.28, 1.3, 0x263238, { metalness: 0.6, roughness: 0.4 }); plat.position.y = 0.24; g.add(plat);
+    const led = _ibBox(1.16, 0.06, 1.36, 0x00E5FF, { emissive: 0x00E5FF, emissiveIntensity: 0.9 }); led.position.y = 0.37; g.add(led);
+    for (const xo of [-0.5, 0.5]) for (const zo of [-0.5, 0.5]) { const w = _ibCyl(0.16, 0.12, 0x111111); w.rotation.z = Math.PI / 2; w.position.set(xo, 0.16, zo); g.add(w); }
+    return { group: g, led, carried: null };
+}
+function _ibTugger() {
+    const g = new THREE.Group();
+    const trac = _ibBox(0.9, 0.7, 1.3, 0xFFB300); trac.position.y = 0.55; g.add(trac);
+    const cab = _ibBox(0.8, 0.6, 0.6, 0x37474F); cab.position.set(0, 1.1, -0.1); g.add(cab);
+    for (const xo of [-0.42, 0.42]) for (const zo of [-0.4, 0.4]) { const w = _ibCyl(0.2, 0.14, 0x111111); w.rotation.z = Math.PI / 2; w.position.set(xo, 0.2, zo); g.add(w); }
+    for (let i = 0; i < 2; i++) {                       // 견인 대차 2대(팔레트 적재)
+        const c = new THREE.Group(); c.position.z = 1.5 + i * 1.6;
+        const bed = _ibBox(1.1, 0.15, 1.0, 0x546E7A); bed.position.y = 0.35; c.add(bed);
+        for (const xo of [-0.5, 0.5]) for (const zo of [-0.4, 0.4]) { const w = _ibCyl(0.16, 0.1, 0x111111); w.rotation.z = Math.PI / 2; w.position.set(xo, 0.16, zo); c.add(w); }
+        const pal = _ibPallet(); pal.position.y = 0.42; pal.scale.setScalar(0.85); c.add(pal);
+        g.add(c);
+    }
+    return { group: g };
+}
+function _ibMove(o, tx, tz, spd, dt) {
+    const dx = tx - o.position.x, dz = tz - o.position.z, d = Math.hypot(dx, dz);
+    if (d < 0.15) return true;
+    const step = Math.min(spd * dt, d);
+    o.position.x += dx / d * step; o.position.z += dz / d * step;
+    o.rotation.y = Math.atan2(dx, dz);
+    return false;
+}
+function _lineLocalTarget(parent, lineKey) {
+    const a = getLineAnchors().find(x => x.lineKey === lineKey);
+    if (!a) return null;
+    a.obj.getWorldPosition(_ibV); parent.worldToLocal(_ibV);
+    return { x: _ibV.x, z: _ibV.z };
+}
+
+function buildInboundLogistics(parent) {
+    const G = new THREE.Group();
+    const pad = new THREE.Mesh(new THREE.PlaneGeometry(11, 10), new THREE.MeshStandardMaterial({ color: 0x37414D, roughness: 0.95 }));
+    pad.rotation.x = -Math.PI / 2; pad.position.set(-46, 0.03, 31); pad.receiveShadow = true; G.add(pad);
+    for (const [px, pz] of [[-51, 27], [-41, 27], [-51, 35], [-41, 35]]) { const post = _ibCyl(0.12, 4.2, 0x90A4AE); post.position.set(px, 2.1, pz); G.add(post); }
+    const roof = _ibBox(11, 0.2, 9, 0xB0BEC5, { metalness: 0.3 }); roof.position.set(-46, 4.2, 31); G.add(roof);
+    const cv = document.createElement('canvas'); cv.width = 512; cv.height = 128; const cc = cv.getContext('2d');
+    cc.fillStyle = '#00695C'; cc.fillRect(0, 0, 512, 128); cc.fillStyle = '#fff'; cc.textAlign = 'center'; cc.textBaseline = 'middle';
+    cc.font = 'bold 46px sans-serif'; cc.fillText('입하장', 256, 44); cc.font = 'bold 26px sans-serif'; cc.fillStyle = '#80CBC4'; cc.fillText('RECEIVING DOCK', 256, 92);
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(4, 1), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv), toneMapped: false })); sign.position.set(-46, 3.6, 26.55); G.add(sign);
+
+    const truck = _ibTruck(); truck.position.set(-46, 0, 100);
+    const fA = _ibForklift(0xFDD835); fA.group.position.set(-49.5, 0, 33); fA.group.rotation.y = Math.PI / 2;
+    const fB = _ibForklift(0xFB8C00); fB.group.position.set(-42.5, 0, 33); fB.group.rotation.y = -Math.PI / 2;
+    for (const sx of [-47.2, -45.2]) { const p = _ibPallet(); p.position.set(sx, 0, 29.5); G.add(p); }
+    const agv = _ibAGV(); agv.group.position.set(-45, 0, 27);
+    const tug = _ibTugger(); tug.group.position.set(-48, 0, 27);
+    G.add(truck); G.add(fA.group); G.add(fB.group); G.add(agv.group); G.add(tug.group);
+    parent.add(G);
+
+    inbound = {
+        parent, group: G, truck, fA, fB, agv, tug,
+        truckState: 'away', truckT: 3.0,
+        agvState: 'idle', agvT: 1.0, agvLine: null,
+        tugState: 'idle', tugT: 4.0, tugLine: null,
+        home: { agv: { x: -45, z: 27 }, tug: { x: -48, z: 27 } }, dock: { x: -46, z: 33 },
+    };
+}
+
+// 차량 1대의 라인 보충 운반 상태머신 (AGV·견인차 공용)
+function _ibVehicleDeliver(ib, key, grp, dt, spd, isAgv) {
+    const stKey = key + 'State', tKey = key + 'T', lnKey = key + 'Line';
+    const home = ib.home[key];
+    switch (ib[stKey]) {
+        case 'idle':
+            ib[tKey] -= dt;
+            if (ib[tKey] <= 0) { const need = factoryLineNeedsPallet(); if (need) { ib[lnKey] = need; ib[stKey] = 'toDock'; } else ib[tKey] = 1.2; }
+            break;
+        case 'toDock':
+            if (_ibMove(grp, ib.dock.x, ib.dock.z, spd, dt)) {
+                ib[stKey] = 'load'; ib[tKey] = 0.8;
+                if (isAgv && !ib.agv.carried) { const p = _ibPallet(); p.position.set(0, 0.42, 0); ib.agv.group.add(p); ib.agv.carried = p; }
+            }
+            break;
+        case 'load':
+            ib[tKey] -= dt; if (ib[tKey] <= 0) ib[stKey] = 'toLine';
+            break;
+        case 'toLine': {
+            const tgt = _lineLocalTarget(ib.parent, ib[lnKey]);
+            if (!tgt) { ib[stKey] = 'return'; }
+            else if (_ibMove(grp, tgt.x, tgt.z + 2.5, spd, dt)) { ib[stKey] = 'drop'; ib[tKey] = 0.6; }
+            break;
+        }
+        case 'drop':
+            ib[tKey] -= dt;
+            if (ib[tKey] <= 0) {
+                factoryReplenishLine(ib[lnKey]);
+                if (isAgv && ib.agv.carried) { ib.agv.group.remove(ib.agv.carried); ib.agv.carried = null; }
+                ib[stKey] = 'return';
+            }
+            break;
+        case 'return':
+            if (_ibMove(grp, home.x, home.z, spd, dt)) { ib[stKey] = 'idle'; ib[tKey] = isAgv ? 2.0 : 3.5; }
+            break;
+    }
+}
+
+function updateInboundLogistics(delta, elapsed) {
+    if (!inbound) return;
+    const ib = inbound;
+    // 트럭: 맵 밖 ↔ 입하장 파킹 반복(완전히 사라졌다 재진입)
+    ib.truckT -= delta;
+    if (ib.truckState === 'away') { if (ib.truckT <= 0) ib.truckState = 'enter'; }
+    else if (ib.truckState === 'enter') { if (_ibMove(ib.truck, -46, 37, 8, delta)) { ib.truckState = 'parked'; ib.truckT = 9.0; } }
+    else if (ib.truckState === 'parked') { if (ib.truckT <= 0) ib.truckState = 'leave'; }
+    else if (ib.truckState === 'leave') { if (_ibMove(ib.truck, -46, 100, 9, delta)) { ib.truckState = 'away'; ib.truckT = 6.0; } }
+    // 지게차: 마스트 리프트(하역 연출)
+    ib.fA.carriage.position.y = 0.25 + (Math.sin(elapsed * 1.2) * 0.5 + 0.5) * 0.9;
+    ib.fB.carriage.position.y = 0.25 + (Math.sin(elapsed * 1.2 + 1.5) * 0.5 + 0.5) * 0.9;
+    // AGV + 견인차: 라인 보충 운반
+    _ibVehicleDeliver(ib, 'agv', ib.agv.group, delta, 3.2, true);
+    _ibVehicleDeliver(ib, 'tug', ib.tug.group, delta, 2.6, false);
+    ib.agv.led.material.emissiveIntensity = 0.6 + Math.sin(elapsed * 6) * 0.35;
+}
+
+buildInboundLogistics(warehouseGroup);   // 검사반 앞 입하장 + 트럭·지게차2·AGV·견인차 (let inbound 선언 이후 실행)
 // ---- 점프맵 ----
 // 타워 외형: 오키나와 정자(월드 x≈10.5~21.5·z≈-18.5~-7.5) 동쪽 빈 잔디에 배치 — 수영장 열(z≈-13)과 정렬.
 // scene 루트(envGroup 밖)라 z 오프셋을 안 받고, 모듈 끝 jumpTargets 수집(envGroup 순회)에서도 제외된다.
@@ -4262,6 +4422,7 @@ function animate() {
     _overlayAccum += delta;
     if (_overlayAccum >= 0.033) { _overlayAccum = 0; updatePersonLabels(); }
     renderer.render(scene, camera);
+    updateInboundLogistics(delta, elapsed);   // STEP2: 입하장 트럭·지게차·AGV·견인차 운반
     updateHoloHud(elapsed);   // STEP2: 공장 홀로그램 HUD(CSS3D) 빌보드·근접·렌더
 }
 

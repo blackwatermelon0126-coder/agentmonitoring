@@ -758,19 +758,30 @@ function makeAGV() {
     return { group: g, carried: null, state: 'idle', target: null, t: 0, _slot: 0, led };
 }
 
-/** 물류 설비 배치: 도크·공급 스택·지게차·AGV + 라인별 초기 팔레트 2개. */
+/** 라인별 투입 스테이징(팔레트 2개)만 배치. 입하·운반(트럭·지게차·AGV·견인차)은 scene.js 월드 물류가 담당. */
 function buildLogistics(group) {
     logisticsGroup = group;
-    const dock = box(3.2, 0.05, 6, 0x455A64); dock.position.set(DOCK_X, 0.03, 0); group.add(dock);
-    for (let i = 0; i < 2; i++) { const p = makePallet(); p.group.position.set(DOCK_X - 0.5, i * 0.5, -1.7); group.add(p.group); }  // 공급 스택(시각)
-    forkliftObj = makeForklift(); forkliftObj.group.position.set(DOCK_X + 0.3, 0, 1.7); forkliftObj.group.rotation.y = Math.PI / 2; group.add(forkliftObj.group);
-    agvObj = makeAGV(); agvObj.group.position.set(DOCK_X + 1.5, 0, 0); group.add(agvObj.group);
     for (const [ln, lz] of LINE_Z_LIST) {
         for (let s = 0; s < 2; s++) {
             const p = makePallet(); p.group.position.set(STAGE_X[s], 0, lz); group.add(p.group);
             p.slotX = STAGE_X[s]; p.lineZ = lz; lineStaging[ln].push(p);
         }
     }
+}
+
+/** 라인 스테이징이 2개 미만인 라인키(ITR/OTR) 반환(없으면 null). scene.js 물류가 보충 대상 판단용. */
+export function factoryLineNeedsPallet() {
+    for (const [ln] of LINE_Z_LIST) if (lineStaging[ln].length < 2) return ln;
+    return null;
+}
+/** 지정 라인 투입부 빈 슬롯에 팔레트 1개 보충. scene.js AGV/견인차가 도착 시 호출. */
+export function factoryReplenishLine(lineKey) {
+    if (!logisticsGroup) return false;
+    const st = lineStaging[lineKey]; if (!st || st.length >= 2) return false;
+    const lz = lineKey === 'ITR' ? -3 : 3, slot = st.length;
+    const p = makePallet(); p.group.position.set(STAGE_X[slot], 0, lz); logisticsGroup.add(p.group);
+    p.slotX = STAGE_X[slot]; p.lineZ = lz; st.push(p);
+    return true;
 }
 
 /** obj를 (tx,tz)로 이동(진행방향 회전). 도착 시 true. */
