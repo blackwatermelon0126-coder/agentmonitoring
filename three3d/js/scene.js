@@ -344,6 +344,34 @@ createPath(-22, 25, 14, 3, 0x90A4AE);
 createPath(-32, 22, 10, 3, 0x90A4AE); // 창고 ↔ 공장 진입로
 const factoryGroup = createFactory(scene);
 const warehouseGroup = createWarehouse(scene);
+buildQCStation(warehouseGroup);   // 물류창고 옆 QC 검사반 (STEP2)
+
+// 물류창고 옆 QC 검사반 — 간판 + 검사대 2대(측정 게이지·샘플) + QC 작업자 2명.
+function buildQCStation(parent) {
+    const g = new THREE.Group();
+    g.position.set(-46, 0, 22);   // 물류창고(월드 -36,22) 서측 옆
+    const pad = new THREE.Mesh(new THREE.PlaneGeometry(9, 7), new THREE.MeshStandardMaterial({ color: 0xE3E7EC, roughness: 0.92 }));
+    pad.rotation.x = -Math.PI / 2; pad.position.set(0, 0.02, 0); pad.receiveShadow = true; g.add(pad);
+    // 간판(캔버스)
+    const cv = document.createElement('canvas'); cv.width = 512; cv.height = 128; const cc = cv.getContext('2d');
+    cc.fillStyle = '#0D47A1'; cc.fillRect(0, 0, 512, 128);
+    cc.fillStyle = '#fff'; cc.textAlign = 'center'; cc.textBaseline = 'middle';
+    cc.font = 'bold 48px sans-serif'; cc.fillText('QC 검사반', 256, 44);
+    cc.font = 'bold 26px sans-serif'; cc.fillStyle = '#90CAF9'; cc.fillText('QUALITY CONTROL', 256, 92);
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(4, 1), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv), toneMapped: false }));
+    sign.position.set(0, 3.2, -3.4); g.add(sign);
+    for (const xo of [-1.9, 1.9]) { const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 3.2, 8), new THREE.MeshStandardMaterial({ color: 0x546E7A })); post.position.set(xo, 1.6, -3.4); post.castShadow = true; g.add(post); }
+    // 검사대 2대 + 측정 게이지 + 샘플 + QC 작업자
+    for (let i = 0; i < 2; i++) {
+        const tz = -1 + i * 2.4;
+        const top = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.1, 1.0), new THREE.MeshStandardMaterial({ color: 0xCFD8DC })); top.position.set(0.6, 0.9, tz); top.castShadow = true; g.add(top);
+        for (const [lx, lz] of [[-0.9, -0.4], [0.9, -0.4], [-0.9, 0.4], [0.9, 0.4]]) { const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.9, 0.08), new THREE.MeshStandardMaterial({ color: 0x78909C })); leg.position.set(0.6 + lx, 0.45, tz + lz); g.add(leg); }
+        const sample = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.2, 0.42), new THREE.MeshStandardMaterial({ color: 0xB0BEC5 })); sample.position.set(0.5, 1.05, tz); sample.castShadow = true; g.add(sample);
+        const dial = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.06, 16), new THREE.MeshStandardMaterial({ color: 0x263238, emissive: 0x0D47A1, emissiveIntensity: 0.3 })); dial.rotation.x = Math.PI / 2; dial.position.set(1.25, 1.16, tz); g.add(dial);
+        const w = createDetailedPerson(traitsFromSeed('qc-' + i, 0x1565C0)); w.group.position.set(-0.9, 0, tz); w.group.rotation.y = Math.PI / 2; w.group.scale.setScalar(0.9); g.add(w.group);
+    }
+    parent.add(g);
+}
 // ---- 점프맵 ----
 // 타워 외형: 오키나와 정자(월드 x≈10.5~21.5·z≈-18.5~-7.5) 동쪽 빈 잔디에 배치 — 수영장 열(z≈-13)과 정렬.
 // scene 루트(envGroup 밖)라 z 오프셋을 안 받고, 모듈 끝 jumpTargets 수집(envGroup 순회)에서도 제외된다.

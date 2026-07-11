@@ -51,6 +51,16 @@ const LINE_META = {
 const porters = [];          // 자재 운반 작업자 (왼쪽 입력): { person, line, lineZ, idleX, pickupX, z, faceY, carryBox, phaseStart }
 const inspectors = [];       // 검수 작업자 (오른쪽 입력): { person, line, x, z, faceY, phase }
 
+// ── 물류(팔레트·지게차·AGV) 상태 ──
+const lifts = [];            // 소모 시 컨베이어로 올라가는 유닛 박스 애니메이션
+const lineStaging = { ITR: [], OTR: [] };   // 라인별 투입 팔레트(최대 2). 각 팔레트 units=2.
+let forkliftObj = null, agvObj = null;
+const consumeTimer = { ITR: 2.0, OTR: 3.2 };   // 라인별 소모 카운트다운(초)
+// 물류 좌표(로컬): 서쪽 도크에서 지게차 하역 → AGV가 라인 투입부 슬롯으로 운반.
+const DOCK_X = -13.0;                          // 하역 도크 x
+const STAGE_X = [-9.2, -8.2];                  // 라인 투입 팔레트 2슬롯 x
+const LINE_Z_LIST = [['ITR', -3], ['OTR', 3]];
+
 // 헬퍼
 function mat(color, opts = {}) {
     return new THREE.MeshStandardMaterial({
@@ -702,6 +712,154 @@ function createProductMesh(lineName) {
 }
 
 // ============================================
+// 물류 (팔레트 · 지게차 · AGV)  — STEP2
+// ============================================
+let logisticsGroup = null;   // 팔레트 재부모용(=factory group)
+
+/** 팔레트 1개: 나무 받침 + 유닛 박스 2개(소모 시 하나씩 숨김). units=2. */
+function makePallet() {
+    const g = new THREE.Group();
+    const deck = box(1.0, 0.08, 0.8, 0x8D6E63); deck.position.y = 0.16; g.add(deck);
+    for (let i = -1; i <= 1; i++) { const sk = box(0.14, 0.16, 0.8, 0x6D4C41); sk.position.set(i * 0.4, 0.08, 0); g.add(sk); }
+    const cargo = [];
+    for (let i = 0; i < 2; i++) {
+        const c = box(0.42, 0.42, 0.62, 0xB0BEC5, { roughness: 0.85 });
+        c.position.set(-0.24 + i * 0.48, 0.41, 0); g.add(c); cargo.push(c);
+        const strap = box(0.44, 0.03, 0.64, 0x455A64); strap.position.set(-0.24 + i * 0.48, 0.5, 0); g.add(strap);
+        c.userData.strap = strap;
+    }
+    return { group: g, units: 2, cargo };
+}
+
+/** 지게차(포크리프트): 노란 차체 + 롤케이지 + 마스트/포크 + 바퀴. carriage로 리프트 애니메이션. */
+function makeForklift() {
+    const g = new THREE.Group();
+    const bodyM = box(0.9, 0.55, 1.4, 0xFDD835); bodyM.position.y = 0.5; g.add(bodyM);
+    const counter = box(0.9, 0.35, 0.5, 0xF9A825); counter.position.set(0, 0.75, -0.55); g.add(counter);
+    for (const xo of [-0.38, 0.38]) for (const zo of [-0.1, 0.5]) { const p = box(0.05, 0.9, 0.05, 0x424242); p.position.set(xo, 1.15, zo); g.add(p); }
+    const roof = box(0.85, 0.06, 0.7, 0x424242); roof.position.set(0, 1.6, 0.2); g.add(roof);
+    const mast = new THREE.Group(); mast.position.set(0, 0, 0.75);
+    for (const xo of [-0.3, 0.3]) { const bar = box(0.06, 1.5, 0.06, 0x616161); bar.position.set(xo, 0.75, 0); mast.add(bar); }
+    const carriage = new THREE.Group();
+    for (const xo of [-0.22, 0.22]) { const fork = box(0.08, 0.05, 0.7, 0x9E9E9E); fork.position.set(xo, 0, 0.35); carriage.add(fork); }
+    carriage.position.y = 0.25; mast.add(carriage); g.add(mast);
+    for (const xo of [-0.42, 0.42]) for (const zo of [-0.45, 0.45]) { const w = cyl(0.22, 0.22, 0.16, 0x212121, 12); w.rotation.z = Math.PI / 2; w.position.set(xo, 0.22, zo); g.add(w); }
+    return { group: g, carriage };
+}
+
+/** AGV(무인 물류 로봇): 낮은 플랫폼 + 발광 LED + 바퀴. 팔레트를 위에 얹어 운반. */
+function makeAGV() {
+    const g = new THREE.Group();
+    const plat = box(1.1, 0.28, 1.3, 0x263238, { metalness: 0.6, roughness: 0.4 }); plat.position.y = 0.24; g.add(plat);
+    const led = new THREE.Mesh(new THREE.BoxGeometry(1.16, 0.06, 1.36), new THREE.MeshStandardMaterial({ color: 0x00E5FF, emissive: 0x00E5FF, emissiveIntensity: 0.9 }));
+    led.position.y = 0.37; g.add(led);
+    const top = box(1.0, 0.06, 1.15, 0x37474F); top.position.y = 0.43; g.add(top);
+    for (const xo of [-0.5, 0.5]) for (const zo of [-0.5, 0.5]) { const w = cyl(0.16, 0.16, 0.12, 0x111111, 10); w.rotation.z = Math.PI / 2; w.position.set(xo, 0.16, zo); g.add(w); }
+    return { group: g, carried: null, state: 'idle', target: null, t: 0, _slot: 0, led };
+}
+
+/** 물류 설비 배치: 도크·공급 스택·지게차·AGV + 라인별 초기 팔레트 2개. */
+function buildLogistics(group) {
+    logisticsGroup = group;
+    const dock = box(3.2, 0.05, 6, 0x455A64); dock.position.set(DOCK_X, 0.03, 0); group.add(dock);
+    for (let i = 0; i < 2; i++) { const p = makePallet(); p.group.position.set(DOCK_X - 0.5, i * 0.5, -1.7); group.add(p.group); }  // 공급 스택(시각)
+    forkliftObj = makeForklift(); forkliftObj.group.position.set(DOCK_X + 0.3, 0, 1.7); forkliftObj.group.rotation.y = Math.PI / 2; group.add(forkliftObj.group);
+    agvObj = makeAGV(); agvObj.group.position.set(DOCK_X + 1.5, 0, 0); group.add(agvObj.group);
+    for (const [ln, lz] of LINE_Z_LIST) {
+        for (let s = 0; s < 2; s++) {
+            const p = makePallet(); p.group.position.set(STAGE_X[s], 0, lz); group.add(p.group);
+            p.slotX = STAGE_X[s]; p.lineZ = lz; lineStaging[ln].push(p);
+        }
+    }
+}
+
+/** obj를 (tx,tz)로 이동(진행방향 회전). 도착 시 true. */
+function _moveXZ(o, tx, tz, spd, dt) {
+    const dx = tx - o.position.x, dz = tz - o.position.z, d = Math.hypot(dx, dz);
+    if (d < 0.06) return true;
+    const step = Math.min(spd * dt, d);
+    o.position.x += dx / d * step; o.position.z += dz / d * step;
+    o.rotation.y = Math.atan2(dx, dz);
+    return false;
+}
+
+/** 소모 시 컨베이어 시작쪽으로 올라가며 사라지는 유닛 박스 스폰. */
+function _spawnLift(x, z) {
+    const b = box(0.42, 0.42, 0.62, 0x90CAF9, { transparent: true, opacity: 1 });
+    b.position.set(x, CONVEYOR_Y + 0.25, z);
+    logisticsGroup.add(b);
+    lifts.push({ mesh: b, sx: x, sz: z, t: 0 });
+}
+
+/** 매 프레임 물류 업데이트: 소모(라인별) + AGV 운반 + 지게차/리프트 애니메이션. */
+function updateLogistics(delta, elapsed) {
+    if (!logisticsGroup) return;
+
+    // 1) 라인별 소모 — 팔레트 units 하나씩 소진(2번 올리면 그 팔레트 비워짐 → 제거)
+    for (const [ln] of LINE_Z_LIST) {
+        consumeTimer[ln] -= delta;
+        if (consumeTimer[ln] <= 0) {
+            consumeTimer[ln] = 3.5;
+            const st = lineStaging[ln];
+            if (st.length && st[0].units > 0) {
+                const p = st[0], idx = p.units - 1, cbox = p.cargo[idx];
+                if (cbox) { cbox.visible = false; if (cbox.userData.strap) cbox.userData.strap.visible = false; _spawnLift(p.slotX, p.lineZ); }
+                p.units--;
+                if (p.units <= 0) {                       // 팔레트 비워짐 → 제거 + 뒤 팔레트 당김
+                    logisticsGroup.remove(p.group); st.shift();
+                    if (st[0]) { st[0].group.position.x = STAGE_X[0]; st[0].slotX = STAGE_X[0]; }
+                }
+            }
+        }
+    }
+
+    // 2) AGV 상태머신 — 부족한 라인에 팔레트 보충
+    const a = agvObj;
+    if (a) {
+        if (a.state === 'idle') {
+            let need = null;
+            for (const [ln, lz] of LINE_Z_LIST) if (lineStaging[ln].length < 2) { need = { ln, lz }; break; }
+            if (need) { a.state = 'toDock'; a.target = need; }
+        } else if (a.state === 'toDock') {
+            if (_moveXZ(a.group, DOCK_X + 1.5, 0, 2.6, delta)) { a.state = 'loading'; a.t = 1.0; }
+        } else if (a.state === 'loading') {
+            a.t -= delta;
+            if (a.t <= 0) { const p = makePallet(); p.group.position.set(0, 0.46, 0); a.group.add(p.group); a.carried = p; a.state = 'toLine'; }
+        } else if (a.state === 'toLine') {
+            a._slot = lineStaging[a.target.ln].length;    // 다음 빈 슬롯
+            if (a._slot > 1) { a.state = 'return'; }       // 그새 찼으면 복귀
+            else if (_moveXZ(a.group, STAGE_X[a._slot], a.target.lz - 1.1, 2.6, delta)) { a.state = 'unloading'; a.t = 0.6; }
+        } else if (a.state === 'unloading') {
+            a.t -= delta;
+            if (a.t <= 0) {
+                const p = a.carried; a.group.remove(p.group);
+                p.group.position.set(STAGE_X[a._slot], 0, a.target.lz);
+                logisticsGroup.add(p.group); p.slotX = STAGE_X[a._slot]; p.lineZ = a.target.lz;
+                lineStaging[a.target.ln].push(p); a.carried = null; a.state = 'return';
+            }
+        } else if (a.state === 'return') {
+            if (_moveXZ(a.group, DOCK_X + 1.5, 0, 2.6, delta)) { a.state = 'idle'; }
+        }
+        a.led.material.emissiveIntensity = 0.6 + Math.sin(elapsed * 6) * 0.35;   // LED 점멸
+    }
+
+    // 3) 지게차 — 마스트 리프트 오르내림 + 소폭 왕복(작업 연출)
+    if (forkliftObj) {
+        forkliftObj.carriage.position.y = 0.25 + (Math.sin(elapsed * 1.1) * 0.5 + 0.5) * 0.95;
+        forkliftObj.group.position.z = 1.7 + Math.sin(elapsed * 0.5) * 0.5;
+    }
+
+    // 4) 리프트 유닛 애니메이션(컨베이어로 올라가며 페이드)
+    for (let i = lifts.length - 1; i >= 0; i--) {
+        const L = lifts[i]; L.t += delta; const k = Math.min(1, L.t / 1.3);
+        L.mesh.position.x = L.sx + (FLOW.start - L.sx) * k;
+        L.mesh.position.y = CONVEYOR_Y + 0.25 + k * 0.5;
+        L.mesh.material.opacity = 1 - k;
+        if (k >= 1) { logisticsGroup.remove(L.mesh); lifts.splice(i, 1); }
+    }
+}
+
+// ============================================
 // 메인 빌더
 // ============================================
 /** 클릭 가능한 POP 화면/베젤 메쉬 목록 반환 (scene.js 레이캐스트용). createFactory 이후 유효. */
@@ -786,6 +944,9 @@ export function createFactory(scene) {
     // POP 단말기: 자재 투입 쪽 1대 (왼쪽 중앙), 완성품 쪽 1대 (오른쪽 중앙)
     buildPopTerminal(group, FLOW.start + 0.5, FACTORY.cz, '자재 투입');
     buildPopTerminal(group, FLOW.end - 0.5, FACTORY.cz, '완성품 입고');
+
+    // 물류(팔레트·지게차·AGV) — 자재가 팔레트로 하역 → AGV가 라인 투입부로 → 2팔레트 소모
+    buildLogistics(group);
 
     // 흐르는 제품
     spawnProducts(group);
@@ -890,6 +1051,7 @@ function poseInspect(person, time, intensity) {
 // 매 프레임 업데이트
 // ============================================
 export function updateFactory(delta, elapsed) {
+    updateLogistics(delta, elapsed);   // 팔레트·지게차·AGV·소모
     // 제품 흐름
     for (const p of products) {
         if (p.state === 'aging') {
