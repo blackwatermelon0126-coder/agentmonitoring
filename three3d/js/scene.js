@@ -476,8 +476,21 @@ function buildInboundLogistics(parent) {
     };
 }
 
-// 입하장↔공장 통로 웨이포인트(warehouseGroup-local): 남쪽 레인으로 건물 우회 후 공장 라인 접근.
-const IB_LANE = [{ x: -46, z: 35 }, { x: -26, z: 35 }];
+// 공장 남측 외곽 코리도 z (월드). 공장 정면 벽 z≈32 바깥 → 이 라인 따라 접근/하역해 건물 통과 방지.
+const IB_CORRIDOR_Z = 34;
+
+// 월드 (wx,wz) → parent(warehouseGroup) 로컬 {x,z}
+function _toLocalXZ(parent, wx, wz) { _ibV.set(wx, 0, wz); parent.worldToLocal(_ibV); return { x: _ibV.x, z: _ibV.z }; }
+
+// 라인 하역 지점(로컬): 라인 앵커의 월드 X에 정렬하되 z는 공장 벽 바깥(IB_CORRIDOR_Z) — 벽 통과 방지.
+function _lineFrontTarget(parent, lineKey) {
+    const a = getLineAnchors().find(x => x.lineKey === lineKey);
+    if (!a) return null;
+    a.obj.getWorldPosition(_ibV);
+    const wx = _ibV.x;
+    _ibV.set(wx, 0, IB_CORRIDOR_Z); parent.worldToLocal(_ibV);
+    return { x: _ibV.x, z: _ibV.z };
+}
 
 // 경로(웨이포인트 배열)를 순서대로 추종. 마지막 도달 시 true.
 function _ibFollowPath(ib, key, grp, spd, dt) {
@@ -487,10 +500,11 @@ function _ibFollowPath(ib, key, grp, spd, dt) {
     return false;
 }
 
-// 차량 1대의 라인 보충 운반 상태머신 (AGV·견인차 공용). 통로 웨이포인트로 이동(건물 통과 방지).
+// 차량 1대의 라인 보충 운반 상태머신 (AGV·견인차 공용). 남측 코리도(z=34)로 이동해 건물 통과 방지.
 function _ibVehicleDeliver(ib, key, grp, dt, spd, isAgv) {
     const stKey = key + 'State', tKey = key + 'T', lnKey = key + 'Line', pKey = key + 'Path', piKey = key + 'Pi';
     const home = ib.home[key];
+    const laneW = () => _toLocalXZ(ib.parent, -46, IB_CORRIDOR_Z);   // 코리도 서측 진입점(입하장 앞)
     switch (ib[stKey]) {
         case 'idle':
             ib[tKey] -= dt;
@@ -505,9 +519,9 @@ function _ibVehicleDeliver(ib, key, grp, dt, spd, isAgv) {
         case 'load':
             ib[tKey] -= dt;
             if (ib[tKey] <= 0) {
-                const tgt = _lineLocalTarget(ib.parent, ib[lnKey]);
-                if (!tgt) { ib[pKey] = [IB_LANE[1], IB_LANE[0], home]; ib[piKey] = 0; ib[stKey] = 'return'; }
-                else { ib[pKey] = [IB_LANE[0], IB_LANE[1], { x: tgt.x, z: tgt.z + 4 }]; ib[piKey] = 0; ib[stKey] = 'toLine'; }
+                const drop = _lineFrontTarget(ib.parent, ib[lnKey]);
+                if (!drop) { ib[pKey] = [laneW(), home]; ib[piKey] = 0; ib[stKey] = 'return'; }
+                else { ib[pKey] = [laneW(), drop]; ib[piKey] = 0; ib[stKey] = 'toLine'; }
             }
             break;
         case 'toLine':
@@ -518,7 +532,7 @@ function _ibVehicleDeliver(ib, key, grp, dt, spd, isAgv) {
             if (ib[tKey] <= 0) {
                 factoryReplenishLine(ib[lnKey]);
                 if (isAgv && ib.agv.carried) { ib.agv.group.remove(ib.agv.carried); ib.agv.carried = null; }
-                ib[pKey] = [IB_LANE[1], IB_LANE[0], home]; ib[piKey] = 0; ib[stKey] = 'return';
+                ib[pKey] = [laneW(), home]; ib[piKey] = 0; ib[stKey] = 'return';
             }
             break;
         case 'return':
