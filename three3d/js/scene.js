@@ -3949,6 +3949,7 @@ function setAvatarViewMode(mode) {
         }
     } else {
         controls.enabled = false;                 // 카메라를 코드가 제어(마우스 회전/줌 잠금)
+        pressedMoveKeys.clear();                  // 이동모드에서 홀드 중이던 방향키 잔류 해제
     }
     updateViewButtons();
 }
@@ -6968,6 +6969,10 @@ function toggleAvatarMove(force) {
 
 /** 프레임 단위 아바타 이동 (animate에서 매 프레임 호출). elapsed: 걷기 모션 위상용 누적 시간 */
 function updateAvatarKeyboardMove(delta, elapsed) {
+    // 접근/1인칭 뷰에서는 본인 아바타 이동을 MY_MOVE_KEYS 경로(전진·후진·좌우 회전)가 전담한다.
+    // 여기의 '카메라 기준 이동'은 아바타를 카메라 쪽으로 돌리고, 팔로우 카메라(updateAvatarCamera)는
+    // 다시 등 뒤로 돌아가려 해 고정점 없이 서로 쫓아 ↓ 홀드 시 시점이 무한 회전한다 → 타워 뷰 전용.
+    if (avatarViewMode !== 'tower') return;
     if (!keyboardMoveEnabled || !selectedAvatarId || pressedMoveKeys.size === 0) return;
     const av = personAvatarMap.get(selectedAvatarId);
     if (!av || av === draggingAvatar) return;   // 드래그 중이면 키 이동 양보
@@ -7069,7 +7074,8 @@ window.addEventListener('keydown', (e) => {
             return;
         }
     }
-    if (keyboardMoveEnabled && MOVE_KEYS.has(e.code) && !_isTyping()) {
+    // 접근/1인칭 뷰에서는 방향키를 가로채지 않는다 — MY_MOVE_KEYS(본인 아바타 조작) 경로가 처리.
+    if (keyboardMoveEnabled && avatarViewMode === 'tower' && MOVE_KEYS.has(e.code) && !_isTyping()) {
         e.preventDefault();
         e.stopPropagation();
         if (sittingSeat) standUp();                    // 앉은 상태에서 방향키 → 먼저 일어섬
