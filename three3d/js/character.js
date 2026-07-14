@@ -646,6 +646,34 @@ export function updatePersonAnimation(person, phase, stamina, time, delta, isWor
         headGroup.rotation.y = -Math.sin(time * speed) * 0.05;
         if (stamina < 30) headGroup.rotation.x = 0.2; // 고개 숙임
 
+    } else if (phase === 'running') {
+        // 달리기 — 걷기와 같은 내부 주파수(위상 연속) + 상체 숙임·큰 보폭·하이니·팔꿈치 접고 크게 스윙.
+        // 호출측이 위상(time)을 더 빠르게 감아(달리기 배속) 케이던스를 높인다.
+        const speed = 8;
+        const stride = 0.85;                 // 걷기(0.5)보다 큰 보폭
+        const t = time * speed;
+
+        pelvis.position.y = 0.9 + Math.abs(Math.sin(t)) * 0.12;   // 큰 상하 바운스(도약감)
+        torso.rotation.x = 0.28;                                  // 앞으로 숙인 상체
+        torso.rotation.y = Math.sin(t) * 0.15;                    // 몸통 트위스트
+
+        // 다리: 큰 스윙 + 무릎 깊게 접힘(하이니)
+        legL.hip.rotation.x = Math.sin(t) * stride;
+        legL.knee.rotation.x = Math.max(0, -Math.sin(t) * stride * 2.0) + 0.15;
+        legR.hip.rotation.x = Math.sin(t + Math.PI) * stride;
+        legR.knee.rotation.x = Math.max(0, -Math.sin(t + Math.PI) * stride * 2.0) + 0.15;
+
+        // 팔: 팔꿈치 ~90° 접고 다리와 반대 위상으로 크게 흔듦 + 살짝 몸쪽으로
+        armL.shoulder.rotation.x = Math.sin(t + Math.PI) * 0.95;
+        armR.shoulder.rotation.x = Math.sin(t) * 0.95;
+        armL.elbow.rotation.x = -1.6;
+        armR.elbow.rotation.x = -1.6;
+        armL.shoulder.rotation.z = 0.14;
+        armR.shoulder.rotation.z = -0.14;
+
+        headGroup.rotation.x = -0.14;                             // 숙인 상체 보정 → 정면 응시
+        headGroup.rotation.y = -Math.sin(t) * 0.04;
+
     } else if (phase === 'sitting') {
         pelvis.position.y = 0.55;
         legL.hip.rotation.x = -Math.PI / 2 + 0.1;

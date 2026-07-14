@@ -75,7 +75,7 @@ const VIEWS = {
     '5': { name: '2층 사무실', pos: [0, 5, -8],   target: [-10, 2.5, -18] },
     '6': { name: '수영장',   pos: [20, 12, 0],    target: [12, 0, -13] },
     '7': { name: '물류창고',  pos: [-30, 14, 38], target: [-42, 1, 22] },
-    '8': { name: '텐퍼센트/바디프렌드', pos: [-13, 13, 15], target: [-24, 5.5, -2] },
+    '8': { name: '텐퍼센트/바디프렌드', pos: [-13, 20, 20], target: [-24, 10, -1] },
 };
 function tweenView(view, ms = 600) {
     const sp = camera.position.clone();
@@ -691,6 +691,20 @@ const walkables = [];
 // 모듈 끝에서 envGroup을 1회 순회해 채운다(아바타는 이후 비동기 추가되므로 자연히 제외됨).
 const jumpTargets = [];
 const seats = [];
+// 태그된 '모든 의자' — 좌표계(envGroup·officeComplexGroup·씬 루트)가 제각각이라
+// 앉을 때 getWorldPosition으로 월드좌표를 실시간 계산한다(오프셋 자동 반영).
+const sittableObjects = [];   // [{ obj, yaw, drop, massage }]
+/** 의자류 오브젝트를 '앉을 수 있음'으로 등록.
+ *  obj: 좌석 오브젝트(그룹/메쉬). yaw: 앉을 때 바라보는 방향. opts.drop: obj 월드y에서 바닥까지 거리
+ *  (그룹 원점이 바닥이면 0, 좌판 메쉬를 태그하면 그 메쉬의 로컬 높이). opts.massage: 안마의자 참조. */
+function makeSittable(obj, yaw = 0, opts = {}) {
+    obj.userData.sittable = true;
+    sittableObjects.push({ obj, yaw, drop: opts.drop || 0, massage: opts.massage });
+    return obj;
+}
+// 불/연기 연출 레지스트리 — 리조트 BBQ 연기·모닥불 불꽃/불티/불빛/마시멜로/불멍 사람을 animate에서 매 프레임 갱신.
+const flameFX = { smoke: [], flames: [], embers: [], lights: [], marsh: [], people: [] };
+const poolTubeSpots = [];   // 수영장 튜브 상호작용 지점 [{ mesh, x, z }] (envGroup 로컬)
 const elevatorZones = [];   // [{ x, z, y, floor }]
 const elevatorPick = [];    // 클릭 시 층 메뉴를 여는 엘리베이터/발판/포털 메쉬
 const elevatorRings = [];   // 진입 포털 링(맥동 애니메이션용)
@@ -912,8 +926,9 @@ o2Desk(1, 2, 0xE91E63);
 let cafeBarista = null, cafeAlba = null, cafeAlba2 = null, cafeCoffeeStream = null;
 let cafeDoor = null, cafeDoorOpen = false, cafeServer2F = null, cafeCat = null, cafeDiner = null, cafeClerk = null, cafeKitchen = null, cafeStocker = null;
 const cafeSteam = [], cafeDoorPick = [], cafeCustomers = [], bodyfriendChairs = [], cafeMenuPick = [], diningGuests = [], mealPlanPick = [];
+const rooftopSingers = [], rooftopAudience = [];   // 옥상 정원 버스킹(가수/관객) 애니메이션 참조
 (function buildTenPercentBodyfriend() {
-    const CAFE = { x: -24, z: 0, w: 16, d: 12, floorH: 2.8 };  // 오피스(8×6)의 2배
+    const CAFE = { x: -24, z: 0, w: 16, d: 12, floorH: 3.9 };  // 오피스(8×6)의 2배 · 층고↑(넉넉한 헤드룸)
     const H  = CAFE.floorH * 4;         // 전체 높이(4층 건물)
     const F2 = CAFE.floorH + 0.09;          // 2층 바닥면(슬래브 윗면)
     const F3 = CAFE.floorH * 2 + 0.09;      // 3층 바닥면
@@ -1471,10 +1486,307 @@ const cafeSteam = [], cafeDoorPick = [], cafeCustomers = [], bodyfriendChairs = 
     stocker.group.rotation.y = Math.PI;   // 선반(−z) 향함
     scene.add(stocker.group);
     cafeStocker = stocker;
+
+    // ============================================
+    // 옥상 정원 + 버스킹 무대 (지붕 위) — 가수 2명 + 관객 6명 (updateRooftopGarden에서 애니메이션)
+    // ============================================
+    (function buildRooftopGarden() {
+        const RY = H + 0.2;                       // 옥상 바닥(지붕 윗면)
+        const halfW = CAFE.w / 2, halfD = CAFE.d / 2;
+        const grassMat = new THREE.MeshStandardMaterial({ color: 0x4C8C3A, roughness: 0.95 });
+        const deckMat  = new THREE.MeshStandardMaterial({ color: 0xB08A5A, roughness: 0.7 });
+        const hedgeMat = new THREE.MeshStandardMaterial({ color: 0x2E7D32, roughness: 0.9 });
+        const potMat   = new THREE.MeshStandardMaterial({ color: 0x8D6E63, roughness: 0.8 });
+        const railMet  = new THREE.MeshStandardMaterial({ color: 0x455A64, metalness: 0.6, roughness: 0.4 });
+        const stageMat = new THREE.MeshStandardMaterial({ color: 0x3E2C20, roughness: 0.7 });
+
+        // 바닥: 우드 데크 + 중앙 잔디
+        add(new THREE.Mesh(new THREE.BoxGeometry(CAFE.w, 0.06, CAFE.d), deckMat), CAFE.x, RY + 0.03, CAFE.z);
+        const deckTop = RY + 0.06;
+        walkables.push(add(new THREE.Mesh(new THREE.BoxGeometry(CAFE.w, 0.02, CAFE.d),
+            new THREE.MeshBasicMaterial({ visible: false })), CAFE.x, deckTop, CAFE.z));   // 옥상 착지면(걷기 판정용)
+        floorCenters[5] = { x: CAFE.x + 4.5, z: CAFE.z + 2, y: deckTop };   // 엘리베이터 '옥상' 도착 지점(무대/관객 피한 우측)
+
+        // 옥상 엘리베이터 진입 발판(내려가기) — 근처에서 층 메뉴 자동 오픈(1~4F와 동일 방식)
+        const rtEvX = CAFE.x + halfW - 0.9, rtEvZ = CAFE.z + halfD - 2.3;
+        add(new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.05, 20),
+            new THREE.MeshStandardMaterial({ color: 0x00C853, emissive: 0x1B5E20, emissiveIntensity: 0.6, roughness: 0.6 })), rtEvX, deckTop + 0.05, rtEvZ);
+        const rtRing = add(new THREE.Mesh(new THREE.TorusGeometry(0.6, 0.06, 10, 28),
+            new THREE.MeshStandardMaterial({ color: 0x00E676, emissive: 0x00C853, emissiveIntensity: 0.9 })), rtEvX, deckTop + 0.14, rtEvZ);
+        rtRing.rotation.x = -Math.PI / 2; elevatorRings.push(rtRing); elevatorPick.push(rtRing);
+        elevatorZones.push({ x: rtEvX, z: rtEvZ, y: deckTop, floor: 5 });
+        add(new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.3), new THREE.MeshBasicMaterial({
+            map: signTex(['🛗 ELEV'], '#0D47A1', '#FFFFFF', ['bold 40px sans-serif']), toneMapped: false })), rtEvX, deckTop + 1.6, rtEvZ);
+        add(new THREE.Mesh(new THREE.BoxGeometry(CAFE.w - 4, 0.03, CAFE.d - 5), grassMat), CAFE.x, deckTop + 0.015, CAFE.z + 1.5);
+
+        // 난간(유리 + 금속 기둥/손잡이) — 4변
+        const postH = 1.1;
+        for (const [x0, z0, x1, z1] of [
+            [-halfW, -halfD, halfW, -halfD], [-halfW, halfD, halfW, halfD],
+            [-halfW, -halfD, -halfW, halfD], [halfW, -halfD, halfW, halfD],
+        ]) {
+            const len = Math.hypot(x1 - x0, z1 - z0), n = Math.round(len / 2);
+            for (let k = 0; k <= n; k++) {
+                add(new THREE.Mesh(new THREE.BoxGeometry(0.06, postH, 0.06), railMet),
+                    CAFE.x + x0 + (x1 - x0) * (k / n), RY + postH / 2, CAFE.z + z0 + (z1 - z0) * (k / n));
+            }
+            const horiz = Math.abs(x1 - x0) > Math.abs(z1 - z0);
+            const midx = CAFE.x + (x0 + x1) / 2, midz = CAFE.z + (z0 + z1) / 2;
+            add(new THREE.Mesh(new THREE.BoxGeometry(horiz ? len : 0.04, postH - 0.3, horiz ? 0.04 : len), glassMat),
+                midx, RY + (postH - 0.3) / 2 + 0.05, midz);
+            add(new THREE.Mesh(new THREE.BoxGeometry(horiz ? len : 0.08, 0.08, horiz ? 0.08 : len), railMet),
+                midx, RY + postH, midz);
+        }
+
+        // 화분 + 관목 + 꽃 (가장자리)
+        const flowerCols = [0xE91E63, 0xFFEB3B, 0xFF5722, 0xFFFFFF];
+        function planter(px, pz) {
+            add(new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 0.8), potMat), px, RY + 0.25, pz);
+            add(new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 7), hedgeMat), px, RY + 0.72, pz);
+            for (let f = 0; f < 4; f++) {
+                const fa = (f / 4) * Math.PI * 2;
+                add(new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 6),
+                    new THREE.MeshStandardMaterial({ color: flowerCols[f], roughness: 0.7 })),
+                    px + Math.cos(fa) * 0.3, RY + 0.9, pz + Math.sin(fa) * 0.3);
+            }
+        }
+        for (const px of [CAFE.x - halfW + 1.2, CAFE.x + halfW - 1.2])
+            for (const pz of [CAFE.z - halfD + 1.2, CAFE.z + halfD - 1.2]) planter(px, pz);
+
+        // 작은 나무 2그루(앞 코너)
+        function tree(tx, tz) {
+            add(new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 1.4, 7), potMat), tx, RY + 0.7, tz);
+            add(new THREE.Mesh(new THREE.SphereGeometry(0.8, 9, 8), hedgeMat), tx, RY + 1.7, tz);
+            add(new THREE.Mesh(new THREE.SphereGeometry(0.55, 9, 8),
+                new THREE.MeshStandardMaterial({ color: 0x43A047, roughness: 0.9 })), tx + 0.4, RY + 2.1, tz + 0.2);
+        }
+        tree(CAFE.x - halfW + 1.6, CAFE.z + halfD - 1.6);
+        tree(CAFE.x + halfW - 1.6, CAFE.z + halfD - 1.6);
+
+        // 페스툰(스트링) 조명 — 코너 기둥 + 전구 줄(살짝 처짐) + 은은한 포인트라이트
+        const poleH = 2.6;
+        const corners = [[-halfW + 0.5, -halfD + 0.5], [halfW - 0.5, -halfD + 0.5], [halfW - 0.5, halfD - 0.5], [-halfW + 0.5, halfD - 0.5]];
+        corners.forEach(([cxo, czo]) => add(new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, poleH, 6), railMet), CAFE.x + cxo, RY + poleH / 2, CAFE.z + czo));
+        for (let e = 0; e < 4; e++) {
+            const [ax, az] = corners[e], [bx, bz] = corners[(e + 1) % 4], nb = 6;
+            for (let k = 1; k < nb; k++) {
+                const sag = Math.sin((k / nb) * Math.PI) * 0.25;
+                add(new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 6),
+                    new THREE.MeshStandardMaterial({ color: 0xFFE9B0, emissive: 0xFFCC66, emissiveIntensity: 1.2 })),
+                    CAFE.x + ax + (bx - ax) * (k / nb), RY + poleH - 0.2 - sag, CAFE.z + az + (bz - az) * (k / nb));
+            }
+        }
+        add(new THREE.PointLight(0xffe6bf, 3.0, 18, 1.2), CAFE.x, RY + 2.4, CAFE.z);
+
+        // ---- 버스킹 무대 (뒤쪽 −z) ----
+        const stageZ = CAFE.z - halfD + 2.2;
+        add(new THREE.Mesh(new THREE.BoxGeometry(6, 0.25, 3), stageMat), CAFE.x, deckTop + 0.125, stageZ);
+        const stageTop = deckTop + 0.25;
+        for (const sx of [-2.6, 2.6])   // 스피커 2개
+            add(new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.1, 0.6), new THREE.MeshStandardMaterial({ color: 0x161616, roughness: 0.6 })),
+                CAFE.x + sx, stageTop + 0.55, stageZ);
+        // 배너
+        add(new THREE.Mesh(new THREE.PlaneGeometry(4.6, 0.72), new THREE.MeshBasicMaterial({
+            map: signTex(['♪ ROOFTOP LIVE ♪'], '#4A148C', '#FFE082', ['bold 56px sans-serif']), toneMapped: false })),
+            CAFE.x, stageTop + 1.9, stageZ - 0.45);
+
+        // ---- 가수 2명 ----
+        // 리드 보컬 — 오른손 마이크, 노래하며 몸 흔듦
+        const singer = createDetailedPerson(traitsFromSeed('rooftop-singer', 0xD81B60));
+        singer.group.scale.setScalar(0.95);
+        singer.group.position.set(CAFE.x - 1.2, stageTop, stageZ + 1.1);
+        singer.group.rotation.y = 0;   // 관객(+z) 바라봄
+        scene.add(singer.group);
+        const micG = new THREE.Group();
+        const micBody = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.02, 0.18, 8), new THREE.MeshStandardMaterial({ color: 0x111111 }));
+        micBody.position.y = -0.1; micG.add(micBody);
+        micG.add(new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 8), new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.5 })));
+        singer.armR.wrist.add(micG);
+        rooftopSingers.push({ p: singer, phase: 0, kind: 'vocal', baseY: stageTop });
+
+        // 기타리스트 — 어깨 기타 + 스트럼
+        const guitarist = createDetailedPerson(traitsFromSeed('rooftop-guitarist', 0x1565C0));
+        guitarist.group.scale.setScalar(0.95);
+        guitarist.group.position.set(CAFE.x + 1.5, stageTop, stageZ + 1.1);
+        guitarist.group.rotation.y = -0.25;
+        scene.add(guitarist.group);
+        const guitar = new THREE.Group();
+        const gBody = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.08, 16), new THREE.MeshStandardMaterial({ color: 0x8D4B2A, roughness: 0.6 }));
+        gBody.rotation.x = Math.PI / 2; guitar.add(gBody);
+        const gNeck = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.72, 0.04), new THREE.MeshStandardMaterial({ color: 0x3E2C20 }));
+        gNeck.position.set(0.52, 0.16, 0); gNeck.rotation.z = -0.85; guitar.add(gNeck);
+        guitar.position.set(0.05, 1.0, 0.28); guitar.rotation.z = 0.25;
+        guitarist.group.add(guitar);
+        rooftopSingers.push({ p: guitarist, phase: 1.5, kind: 'guitar', baseY: stageTop });
+
+        // ---- 관객 6명 (무대 앞, +z 에서 무대를 바라봄) ----
+        const fanShirts = [0xE57373, 0x64B5F6, 0xFFB74D, 0xBA68C8, 0x4DB6AC, 0xFFF176];
+        const fanRows = [
+            { z: stageZ + 3.3, xs: [-2.2, 0, 2.2] },
+            { z: stageZ + 4.9, xs: [-1.1, 1.1, 3.3] },
+        ];
+        let fi = 0;
+        for (const row of fanRows) for (const fx of row.xs) {
+            const fan = createDetailedPerson(traitsFromSeed('rooftop-fan-' + fi, fanShirts[fi % fanShirts.length]));
+            fan.group.scale.setScalar(0.92);
+            fan.group.position.set(CAFE.x + fx, deckTop + 0.03, row.z);
+            fan.group.rotation.y = Math.PI;   // 무대(−z) 바라봄
+            scene.add(fan.group);
+            rooftopAudience.push({ p: fan, phase: fi * 1.3, cheer: fi % 2 === 0 });   // 짝수=박수, 홀수=양팔 흔들
+            fi++;
+        }
+
+        // ---- 관객용 벤치 4개 (서 있는 관객 뒤, 무대를 바라봄, 앉기 가능) + 벤치에 앉은 관객 3명 ----
+        function rtBench(bx, bz) {
+            const g = new THREE.Group();
+            const seat = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.08, 0.5), potMat); seat.position.y = 0.45; g.add(seat);
+            const back = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.42, 0.06), potMat); back.position.set(0, 0.66, 0.22); g.add(back);   // 등받이 +z(무대 반대편)
+            for (const lx of [-0.65, 0.65]) { const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.45, 0.4), railMet); leg.position.set(lx, 0.22, 0); g.add(leg); }
+            g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+            g.position.set(bx, deckTop, bz); scene.add(g);
+            makeSittable(g, Math.PI);   // 무대(−z)를 바라보고 앉기
+            return [bx, bz];
+        }
+        const benchPos = [];
+        for (const bz of [CAFE.z + 2.6, CAFE.z + 4.0]) for (const bx of [CAFE.x - 2.6, CAFE.x + 2.6]) benchPos.push(rtBench(bx, bz));
+        // 벤치에 앉은 관객 3명 (앉은 자세로 박수·환호는 updateRooftopGarden에서)
+        const seatShirts = [0x7E57C2, 0x26A69A, 0xEF5350, 0xFFA726];
+        [0, 1, 3].forEach((bi, k) => {
+            const [bx, bz] = benchPos[bi];
+            const p = createDetailedPerson(traitsFromSeed('rooftop-benchfan-' + bi, seatShirts[k % seatShirts.length]));
+            p.group.scale.setScalar(0.92);
+            p.group.position.set(bx - 0.35, deckTop, bz);   // 벤치 좌측에 착석
+            p.group.rotation.y = Math.PI;                    // 무대 바라봄
+            scene.add(p.group);
+            rooftopAudience.push({ p, phase: 3 + bi * 1.1, cheer: bi % 2 === 0, seated: true });
+        });
+    })();
 })();
 
 // 텐퍼센트 카페 직원/연출 애니메이션 (animate에서 매 프레임 호출)
 // - 바리스타: 머신 쪽으로 팔을 뻗고 상하로 움직이며 커피 추출
+// 리조트 불/연기 연출 갱신 — BBQ 연기(상승·확산·소멸 반복) + 모닥불 불꽃(깜빡임)·불티(상승)·불빛(흔들림) + 불멍 사람 idle
+function updateFlameFX(elapsed, delta) {
+    // 연기: 위로 피어오르며 커지고 옅어짐 → 주기 반복
+    for (const p of flameFX.smoke) {
+        const local = ((elapsed + p.phase) % p.dur) / p.dur;   // 0..1
+        p.mesh.position.set(
+            p.x0 + Math.sin((elapsed + p.phase) * 1.3) * p.drift * local,
+            p.y0 + local * p.rise,
+            p.z0 + Math.cos((elapsed + p.phase) * 1.1) * p.drift * local * 0.5,
+        );
+        p.mesh.scale.setScalar(0.6 + local * 2.4);
+        p.mesh.material.opacity = p.op0 * (1 - local);
+    }
+    // 불꽃: 높이·폭 흔들림(이중 사인) + 투명도 맥동
+    for (const f of flameFX.flames) {
+        const fl = 0.75 + Math.sin(elapsed * f.speed + f.phase) * 0.2 + Math.sin(elapsed * f.speed * 2.1 + f.phase) * 0.08;
+        f.mesh.scale.set(1 + (1 - fl) * 0.18, fl, 1 + (1 - fl) * 0.18);
+        f.mesh.material.opacity = Math.min(1, f.op0 * (0.6 + fl * 0.5));
+    }
+    // 불티: 위로 솟아오르며 소멸 → 반복
+    for (const e of flameFX.embers) {
+        const local = (elapsed * e.speed + e.phase) % 1;
+        e.mesh.position.x = e.x0 + Math.sin((elapsed + e.phase * 6.28) * 3) * 0.12;
+        e.mesh.position.y = e.y0 + local * e.rise;
+        e.mesh.material.opacity = Math.max(0, 0.95 * (1 - local));
+    }
+    // 불빛: 세기 흔들림(모닥불 특유의 깜빡임)
+    for (const o of flameFX.lights) {
+        o.light.intensity = o.base * (0.72 + Math.abs(Math.sin(elapsed * 8 + o.phase)) * 0.36 + Math.sin(elapsed * 17 + o.phase) * 0.08);
+    }
+    // 마시멜로: 불 위에서 이리저리 돌려가며 굽는 느낌(막대 끝에서 까딱)
+    for (const m of flameFX.marsh) {
+        m.spinner.rotation.x = Math.sin(elapsed * 1.6 + m.phase) * 0.3;
+    }
+    // 불멍 사람 idle — 앉은 기본 자세(눈 깜빡임 포함) + 상체 호흡·고개 둘러봄 + 마시멜로 굽는 오른팔
+    for (const c of flameFX.people) {
+        const p = c.p, t = elapsed + c.phase;
+        updatePersonAnimation(p, 'sitting', 100, t, delta, false);   // 앉은 자세 + 눈 깜빡임(팔은 0으로 리셋됨)
+        p.torso.rotation.x = Math.sin(t * 1.3) * 0.05;              // 호흡
+        p.torso.rotation.y = Math.sin(t * 0.8) * 0.05;             // 좌우 미세 흔들림
+        p.headGroup.rotation.y = Math.sin(t * 0.5) * 0.3;          // 천천히 둘러봄
+        p.headGroup.rotation.x = -0.05 + Math.sin(t * 0.9) * 0.05;
+        p.armR.shoulder.rotation.x = -1.15 + Math.sin(t * 1.1) * 0.13;   // 마시멜로 위아래로(굽기)
+        p.armR.elbow.rotation.x = -0.5 + Math.sin(t * 1.1 + 1) * 0.08;
+    }
+}
+
+// 옥상 정원 버스킹 애니메이션 — 가수(노래·기타)·관객(스웨이·박수·환호)을 자연스럽게 구동
+function updateRooftopGarden(elapsed, delta) {
+    const beat = elapsed * 3.4;   // 음악 템포(리듬)
+    // 가수 2명
+    for (const s of rooftopSingers) {
+        const p = s.p, t = elapsed + s.phase;
+        updatePersonAnimation(p, 'idle', 100, t, delta, false);   // 중립 + 눈 깜빡임(팔·상체 0으로 리셋)
+        p.pelvis.position.y = 0.9 + Math.abs(Math.sin(beat + s.phase)) * 0.05;   // 리듬 바운스
+        p.torso.rotation.z = Math.sin(t * 2) * 0.08;             // 좌우 흔들
+        p.torso.rotation.x = Math.sin(t * 1.6) * 0.04;
+        p.headGroup.rotation.x = -0.05 + Math.sin(beat) * 0.12;  // 고개 끄덕(비트)
+        p.headGroup.rotation.z = Math.sin(t * 2) * 0.06;
+        if (s.kind === 'vocal') {
+            p.armR.shoulder.rotation.x = -0.5; p.armR.shoulder.rotation.z = -0.5;
+            p.armR.elbow.rotation.x = -1.9 + Math.sin(beat) * 0.08;              // 마이크를 입가로
+            p.armL.shoulder.rotation.x = -1.6 + Math.sin(t * 3) * 0.5;           // 왼팔 흔들며 흥
+            p.armL.shoulder.rotation.z = 0.3; p.armL.elbow.rotation.x = -0.5;
+        } else {
+            p.armR.shoulder.rotation.x = -0.8; p.armR.shoulder.rotation.z = -0.4;
+            p.armR.elbow.rotation.x = -1.0 + Math.sin(beat * 2) * 0.35;          // 스트로크(스트럼)
+            p.armL.shoulder.rotation.x = -0.7; p.armL.shoulder.rotation.z = 0.5;
+            p.armL.elbow.rotation.x = -1.5;                                       // 왼손 넥 짚기
+        }
+    }
+    // 관객 (서 있는 관객 + 벤치에 앉은 관객)
+    for (const f of rooftopAudience) {
+        const p = f.p, t = elapsed + f.phase;
+        if (f.seated) {
+            updatePersonAnimation(p, 'sitting', 100, t, delta, false);           // 앉은 자세(다리 굽힘) + 깜빡임
+        } else {
+            updatePersonAnimation(p, 'idle', 100, t, delta, false);
+            p.pelvis.position.y = 0.9 + Math.abs(Math.sin(beat + f.phase)) * 0.06;   // 서서 방방 뛰는 리듬
+        }
+        p.torso.rotation.z = Math.sin(t * 2 + f.phase) * 0.12;                   // 좌우 스웨이
+        p.headGroup.rotation.x = Math.sin(beat + f.phase) * 0.1;
+        if (f.cheer) {   // 박수 — 가슴 앞에서 손 마주치기
+            const clap = Math.sin(beat * 2) * 0.25;
+            p.armL.shoulder.rotation.x = -1.3; p.armL.elbow.rotation.x = -1.1; p.armL.shoulder.rotation.z = 0.35 - clap;
+            p.armR.shoulder.rotation.x = -1.3; p.armR.elbow.rotation.x = -1.1; p.armR.shoulder.rotation.z = -0.35 + clap;
+        } else {         // 양팔 위로 들고 좌우로 흔들기
+            const wave = Math.sin(beat + f.phase) * 0.4;
+            p.armL.shoulder.rotation.x = -2.6; p.armL.elbow.rotation.x = -0.3; p.armL.shoulder.rotation.z = 0.3 + wave;
+            p.armR.shoulder.rotation.x = -2.6; p.armR.elbow.rotation.x = -0.3; p.armR.shoulder.rotation.z = -0.3 + wave;
+        }
+    }
+}
+
+// 튜브 타고 물놀이 — 풀 안에서 천천히 표류 + 물결 바운스 + 다리 물장구·팔 젓기(노는 액션)
+function updateTubing(elapsed, delta) {
+    if (!tubingActive || !tubingAvatarId) return;
+    const av = personAvatarMap.get(tubingAvatarId);
+    if (!av) { tubingActive = false; return; }
+    tubingAngle += delta * 0.5;
+    const cx = POOL.x, cz = POOL.z + envGroup.position.z, r = 1.1;
+    av.group.position.x = cx + Math.cos(tubingAngle) * r;               // 풀 안에서 원을 그리며 표류
+    av.group.position.z = cz + Math.sin(tubingAngle) * r;
+    av.group.position.y = -0.45 + Math.sin(elapsed * 1.6) * 0.05;       // 물에 깊게 담긴 채 물결 바운스
+    av.group.rotation.y = tubingAngle + Math.PI / 2 + Math.sin(elapsed * 0.8) * 0.3;   // 표류 방향 + 살랑
+    const po = av.personObj;
+    if (po && po.legL) {
+        updatePersonAnimation(po, 'idle', 100, elapsed, delta, false);   // 중립 + 눈 깜빡임(팔·다리 리셋)
+        po.pelvis.position.y = 0.55;                                     // 튜브에 앉음
+        po.torso.rotation.x = -0.25;                                    // 뒤로 느긋하게 기댐
+        po.headGroup.rotation.y = Math.sin(elapsed * 0.6) * 0.35;       // 주변 둘러봄
+        po.headGroup.rotation.x = -0.05;
+        po.legL.hip.rotation.x = -0.7 + Math.sin(elapsed * 3) * 0.28;    // 다리 앞으로 + 물장구
+        po.legR.hip.rotation.x = -0.7 + Math.sin(elapsed * 3 + Math.PI) * 0.28;
+        po.legL.knee.rotation.x = 0.4; po.legR.knee.rotation.x = 0.4;
+        po.armL.shoulder.rotation.x = -0.2; po.armL.shoulder.rotation.z = 0.6;
+        po.armL.elbow.rotation.x = -0.3 + Math.sin(elapsed * 2) * 0.3;   // 물 저으며 놀기
+        po.armR.shoulder.rotation.x = -0.2; po.armR.shoulder.rotation.z = -0.6;
+        po.armR.elbow.rotation.x = -0.3 + Math.sin(elapsed * 2 + Math.PI) * 0.3;
+    }
+}
+
 // - 알바: 가벼운 끄덕임 + 이따금 손짓(주문받기)
 // - 추출 스트림: 주기적으로 흐름(추출/대기 반복), 스팀은 상승·소멸 반복
 function updateCafeStaff(elapsed) {
@@ -2445,6 +2757,7 @@ function createBench(x, z, ry = 0) {
         leg.position.set(lx, 0.2, 0); g.add(leg);
     }
     g.position.set(x, 0, z); g.rotation.y = ry; scene.add(g);
+    makeSittable(g, ry);   // 등받이(−z) 반대인 +z를 바라보고 앉기
     return { x, z: z + 0.5, ry };
 }
 
@@ -2561,6 +2874,7 @@ function createSunbed(x, z, ry = 0) {
     const towel = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.02, 0.45), new THREE.MeshStandardMaterial({ color: pick([0xE91E63, 0xFFEB3B, 0x00BCD4, 0xFF5722]) }));
     towel.position.set(0.1, 0.3, 0); g.add(towel);
     g.position.set(x, 0, z); g.rotation.y = ry; scene.add(g);
+    makeSittable(g, ry);   // 선베드에 걸터앉기
 }
 createSunbed(POOL.x - 1, POOL.z + POOL.d / 2 + 0.9);
 createSunbed(POOL.x + 1, POOL.z + POOL.d / 2 + 0.9);
@@ -2770,6 +3084,70 @@ tube.rotation.x = Math.PI / 2; scene.add(tube);
 const tube2 = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.11, 12, 24), new THREE.MeshStandardMaterial({ color: 0xE91E63, roughness: 0.4 }));
 tube2.position.set(POOL.x - 1.5, 0.14, POOL.z - 0.7);
 tube2.rotation.x = Math.PI / 2; scene.add(tube2);
+// 튜브 상호작용 등록 — 풀사이드에서 Enter로 '튜브 타고 놀기'
+poolTubeSpots.push({ mesh: tube, x: POOL.x + 1.2, z: POOL.z + 0.5 });
+poolTubeSpots.push({ mesh: tube2, x: POOL.x - 1.5, z: POOL.z - 0.7 });
+
+// ============================================
+// 베스킨라빈스 31 아이스크림 가게 (사탕과자점 ↔ 왁뿌타워 사이, 월드 좌표)
+// ============================================
+const ICE = { x: 23, z: -13.5, w: 4.6, d: 3.4 };   // 월드 좌표(_origSceneAdd)
+const ICE_FLAVORS = { 딸기: 0xFF6F91, 포도: 0x8E44AD, 초코: 0x6B4226, 바닐라: 0xFFF1C1 };
+let iceCreamStaff = null;
+// 아이스크림 먹기 상태 + 맛 선택 팝업 상태
+let eatingActive = false, eatingAvatarId = null, eatingCone = null, eatingTimer = 0;
+let iceMenuArmed = true;
+(function buildBaskinRobbins() {
+    const iceAdd = (m, x, y, z) => { m.position.set(x, y, z); _origSceneAdd(m); return m; };
+    const glass = new THREE.MeshPhysicalMaterial({ color: 0xF5FBFF, transparent: true, opacity: 0.16, transmission: 0.9, roughness: 0.05, side: THREE.DoubleSide });
+    const pink  = new THREE.MeshStandardMaterial({ color: 0xE84B8A, metalness: 0.3, roughness: 0.4 });   // BR 핑크
+    const blue  = new THREE.MeshStandardMaterial({ color: 0x1C6FB5, roughness: 0.6 });                   // BR 블루
+    const hw = ICE.w / 2, hd = ICE.d / 2;
+
+    // 바닥
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(ICE.w, ICE.d), new THREE.MeshStandardMaterial({ color: 0xFCE7F0, roughness: 0.8 }));
+    floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; iceAdd(floor, ICE.x, 0.02, ICE.z);
+    // 유리 벽(뒤·좌·우) — 앞은 개방
+    iceAdd(new THREE.Mesh(new THREE.BoxGeometry(ICE.w, 2.4, 0.06), glass), ICE.x, 1.2, ICE.z - hd);
+    iceAdd(new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.4, ICE.d), glass), ICE.x - hw, 1.2, ICE.z);
+    iceAdd(new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.4, ICE.d), glass), ICE.x + hw, 1.2, ICE.z);
+    for (const sx of [-hw, hw]) for (const sz of [-hd, hd])
+        iceAdd(new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.5, 0.12), pink), ICE.x + sx, 1.25, ICE.z + sz);
+    // 지붕(핑크) + 파란 띠
+    iceAdd(new THREE.Mesh(new THREE.BoxGeometry(ICE.w + 0.3, 0.2, ICE.d + 0.3), pink), ICE.x, 2.55, ICE.z);
+    iceAdd(new THREE.Mesh(new THREE.BoxGeometry(ICE.w + 0.34, 0.1, ICE.d + 0.34), blue), ICE.x, 2.42, ICE.z);
+
+    // 간판 — 로컬 이미지(baskin-sign.png, 808×632) 텍스처
+    const signTexBR = new THREE.TextureLoader().load('/3d/assets/baskin-sign.png');
+    signTexBR.colorSpace = THREE.SRGBColorSpace;
+    signTexBR.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    const sw = 2.4, sh = sw * 632 / 808;   // 원본 비율(808×632) 유지 → 높이 ≈1.88, 지붕 위 빌보드
+    const signY = 3.6;
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(sw, sh),
+        new THREE.MeshBasicMaterial({ map: signTexBR, transparent: true, toneMapped: false }));
+    iceAdd(sign, ICE.x, signY, ICE.z + hd + 0.06);
+    // 간판 뒤 흰 판(투명 PNG 대비 + 빌보드 느낌)
+    iceAdd(new THREE.Mesh(new THREE.PlaneGeometry(sw + 0.15, sh + 0.15), new THREE.MeshBasicMaterial({ color: 0xffffff })),
+        ICE.x, signY, ICE.z + hd + 0.05);
+
+    // 카운터 + 아이스크림 쇼케이스(유리) + 4가지 맛 통
+    iceAdd(new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.9, 0.7), new THREE.MeshStandardMaterial({ color: 0xF7B8D2 })), ICE.x, 0.45, ICE.z + 0.5);
+    iceAdd(new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.5, 0.7), glass), ICE.x, 1.18, ICE.z + 0.5);
+    Object.entries(ICE_FLAVORS).forEach(([name, col], i) => {
+        const tx = ICE.x - 1.05 + i * 0.7;
+        iceAdd(new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.24, 0.28, 16), new THREE.MeshStandardMaterial({ color: 0xECEFF1, metalness: 0.3 })), tx, 0.99, ICE.z + 0.5);
+        iceAdd(new THREE.Mesh(new THREE.SphereGeometry(0.26, 12, 10, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: col, roughness: 0.6 })), tx, 1.12, ICE.z + 0.5);
+    });
+    iceAdd(new THREE.PointLight(0xFFF0F5, 2.6, 9, 1.0), ICE.x, 2.3, ICE.z);
+
+    // 알바생 (카운터 뒤, 손님을 향함) — updateIceCream에서 스쿱 애니메이션
+    const staff = createDetailedPerson(traitsFromSeed('baskin-alba', 0xE84B8A));
+    staff.group.scale.setScalar(0.95);
+    staff.group.position.set(ICE.x, 0, ICE.z - 0.55);
+    staff.group.rotation.y = 0;   // 손님(+z) 바라봄
+    _origSceneAdd(staff.group);
+    iceCreamStaff = staff;
+})();
 
 // ============================================
 // 사무실 내부 책상 배치
@@ -2812,6 +3190,7 @@ function createDesk(x, z, idx) {
         arm.rotation.y = a; chair.add(arm);
     }
     chair.position.set(x, 0, z + 0.6); scene.add(chair);
+    makeSittable(chair, Math.PI);   // 책상(−z)을 바라보고 앉기
 
     return screen;
 }
@@ -3771,7 +4150,7 @@ function _throttleSendPosition() {
  */
 function updateSelfVertical(delta, moving) {
     const av = myPersonId && personAvatarMap.get(myPersonId);
-    if (!av || sittingSeat) return;                 // 앉은 상태면 물리 생략
+    if (!av || (sittingSeat && selectedAvatarId === myPersonId) || (tubingActive && tubingAvatarId === myPersonId) || (eatingActive && eatingAvatarId === myPersonId)) return;   // 내 아바타가 앉음/튜브/먹는 중이면 물리 생략
     // 지상+정지 상태면 레이캐스트 불필요(위치 불변) → 매 프레임 캐스트 방지
     if (!_airborne && !moving) return;
     const px = av.group.position.x, pz = av.group.position.z;
@@ -3820,7 +4199,7 @@ function updateSelfVertical(delta, moving) {
 /** SPACE 점프 트리거 — 지상에 있을 때만. 본인 아바타 필요. */
 function trySelfJump() {
     const av = myPersonId && personAvatarMap.get(myPersonId);
-    if (!av || sittingSeat) return;
+    if (!av || (sittingSeat && selectedAvatarId === myPersonId) || (tubingActive && tubingAvatarId === myPersonId) || (eatingActive && eatingAvatarId === myPersonId)) return;
     if (_airborne) return;                          // 이미 공중이면 무시(더블점프 방지)
     _jumpVelY = JUMP_SPEED;
     _airborne = true;
@@ -3834,7 +4213,7 @@ function trySelfJump() {
 function resetSelfPosition() {
     const av = myPersonId && personAvatarMap.get(myPersonId);
     if (!av) { showSelectToast('로그인 후 본인 아바타가 있을 때 사용할 수 있어요'); return; }
-    if (sittingSeat) standUp();                     // 앉아 있으면 먼저 일어서기
+    if (sittingSeat && selectedAvatarId === myPersonId) standUp();   // 내가 앉아 있으면 먼저 일어서기
     // 홈 좌표 산정
     let hx = 0, hz = 8;                              // 기본: 정문 광장
     if (av.department && DEPT_ROOMS[av.department]) {
@@ -3903,6 +4282,7 @@ function resetSelfPettingPose(walkAv) {
  */
 function updateAvatarCamera(delta) {
     if (avatarViewMode === 'tower') return;
+    if (tubingActive && tubingAvatarId === myPersonId) return;   // 튜브 물놀이 중엔 카메라 따라가지 않음(자유 시점)
     const av = myPersonId && personAvatarMap.get(myPersonId);
     if (!av) return;
     const ry = av.group.rotation.y;
@@ -3968,9 +4348,10 @@ function updateViewButtons() {
  * 아바타 걷기/idle 손발 애니메이션 (자기·원격 아바타 공용 헬퍼).
  * DetailedPerson은 updatePersonAnimation, 수박/부리부리몬은 walkLimbType 메쉬를 직접 제어.
  */
-function animateAvatarWalk(av, isWalking, elapsed, delta) {
+function animateAvatarWalk(av, isWalking, elapsed, delta, isRunning = false) {
     if (av.personObj && av.personObj.legL) {
-        updatePersonAnimation(av.personObj, isWalking ? 'walking-in' : 'idle', 100, elapsed, delta, false);
+        const phase = isWalking ? (isRunning ? 'running' : 'walking-in') : 'idle';
+        updatePersonAnimation(av.personObj, phase, 100, elapsed, delta, false);
     } else {
         if (!av._wl) {
             av._wl = {};
@@ -3978,11 +4359,12 @@ function animateAvatarWalk(av, isWalking, elapsed, delta) {
         }
         const wl = av._wl;
         if (isWalking) {
+            const amp = isRunning ? 0.85 : 0.5;          // 달릴 때 팔·다리 스윙 크게(수박 등 단순 캐릭터)
             const wp = elapsed * 4;
-            if (wl.armL) wl.armL.rotation.x = Math.sin(wp + Math.PI) * 0.5;
-            if (wl.armR) wl.armR.rotation.x = Math.sin(wp) * 0.5;
-            if (wl.legL) wl.legL.rotation.x = Math.sin(wp) * 0.55;
-            if (wl.legR) wl.legR.rotation.x = Math.sin(wp + Math.PI) * 0.55;
+            if (wl.armL) wl.armL.rotation.x = Math.sin(wp + Math.PI) * amp;
+            if (wl.armR) wl.armR.rotation.x = Math.sin(wp) * amp;
+            if (wl.legL) wl.legL.rotation.x = Math.sin(wp) * (amp + 0.05);
+            if (wl.legR) wl.legR.rotation.x = Math.sin(wp + Math.PI) * (amp + 0.05);
         } else {
             if (wl.armL) wl.armL.rotation.x *= 0.85;
             if (wl.armR) wl.armR.rotation.x *= 0.85;
@@ -4000,6 +4382,8 @@ function animate() {
     renderer.shadowMap.needsUpdate = (_shadowFrame++ % 2) === 0;
     // 타워 모드에서만 OrbitControls 갱신 — 접근/1인칭은 updateAvatarCamera가 카메라 전담(충돌 방지)
     if (avatarViewMode === 'tower') controls.update();
+    // 달리기 모션 위상 누적 — 달릴 때 팔·다리를 더 빠르게 흔들도록(멈춰도 끊김 없이 이어짐)
+    _runStepPhase += delta * (avatarRunning ? RUN_ANIM_MULT : 1);
     updateAvatarKeyboardMove(delta, elapsed);
     updateSelectionIndicator(elapsed);
     updateInteractHint();
@@ -4016,7 +4400,7 @@ function animate() {
     if (myPersonId && keysDown.size > 0 && !_isTyping()) {
         const av = personAvatarMap.get(myPersonId);
         if (av) {
-            const SPEED = 5; // 3D 단위/초
+            const SPEED = avatarRunning ? SELF_RUN_SPEED : SELF_WALK_SPEED; // 3D 단위/초(달리기 시 가속)
             if (avatarViewMode === 'tower') {
                 // [타워] 카메라가 바라보는 수평 방향 기준으로 이동 — 자유 조망에 맞는 조작감
                 camera.getWorldDirection(_kbFwd); _kbFwd.y = 0; _kbFwd.normalize();
@@ -4075,7 +4459,7 @@ function animate() {
             }
           } else {
             const isWalking = keysDown.size > 0 && !_isTyping();
-            animateAvatarWalk(walkAv, isWalking, elapsed, delta);
+            animateAvatarWalk(walkAv, isWalking, _runStepPhase, delta, avatarRunning);   // 달리기 시 전용 모션 + 빠른 위상
           }
         }
     }
@@ -4112,6 +4496,10 @@ function animate() {
     updateWarehouse(delta, elapsed);
     updateStairAgent(elapsed);
     updateCafeStaff(elapsed);
+    updateIceCream(elapsed, delta);        // 베스킨라빈스 알바생 + 아이스크림 먹기
+    updateTubing(elapsed, delta);          // 수영장 튜브 물놀이
+    updateRooftopGarden(elapsed, delta);   // 텐퍼센트 옥상 정원 버스킹(가수·관객)
+    updateFlameFX(elapsed, delta);   // 리조트 BBQ 연기 + 모닥불 + 불멍 사람
 
 
     // ---- 시간 / 날씨 ----
@@ -4472,6 +4860,9 @@ let draggingAvatar = null;
 let keyboardMoveEnabled = false;
 let selectedAvatarId = null;
 let sittingSeat = null;   // 앉아 있는 좌석({x,z,y,yaw}) 또는 null
+// 수영장 튜브 타기 상태 — 튜브를 끼고 풀에서 표류하며 노는 액션
+let tubingActive = false, tubingAvatarId = null, tubingRing = null, tubingTube = null, tubingAngle = 0;
+const TUBE_RANGE = 2.8;   // 튜브 인식 반경(풀사이드에서)
 // ⚠ TDZ 방지: animate()가 updateInteractHint()에서 아래 값들을 참조하므로 animate() 앞에서 선언.
 const SIT_RANGE = 2.6;    // 좌석 인식 반경(넉넉히)
 const EV_RANGE  = 2.5;    // 엘리베이터 진입존 인식 반경
@@ -4484,6 +4875,25 @@ let selectionRing = null;
 let myPersonId = null;
 const keysDown = new Set();
 let _savePositionTimer = null;
+
+// ── 방향키 더블탭 → 달리기(뛰기) ──
+// 같은 방향키를 RUN_DOUBLETAP_MS(ms) 안에 두 번 누르면 avatarRunning=true → 이동속도·모션 가속.
+// 이동을 멈추면(모든 이동키 뗌) 해제된다. 내 캐릭터(WASD/화살표)·선택아바타 이동모드(화살표) 공통.
+let avatarRunning = false;
+let _lastRunTapCode = null, _lastRunTapMs = 0;
+let _runStepPhase = 0;                 // 걷기/달리기 팔·다리 모션 위상(달릴 때 빠르게 감김)
+const RUN_DOUBLETAP_MS = 300;          // 더블탭으로 인정하는 최대 간격(ms)
+const RUN_ANIM_MULT = 1.7;             // 달릴 때 손발 흔드는 속도 배수
+const SELF_WALK_SPEED = 5, SELF_RUN_SPEED = 9;   // 내 캐릭터 걷기/달리기 속도(유닛/초)
+// 방향키 keydown마다 호출 — 같은 키 빠른 재입력이면 달리기 시작(자동반복 e.repeat는 무시).
+function noteMoveTapForRun(code, tsMs, isRepeat) {
+    if (isRepeat) return;
+    if (_lastRunTapCode === code && (tsMs - _lastRunTapMs) < RUN_DOUBLETAP_MS && !avatarRunning) {
+        avatarRunning = true;
+        showSelectToast('🏃 달리기');
+    }
+    _lastRunTapCode = code; _lastRunTapMs = tsMs;
+}
 
 // ⚠ TDZ 방지: animate()가 updatePortals()에서 아래 값들을 참조하므로 animate() 앞에서 선언.
 // (officeJumpTargets는 모듈 끝 jumpTargets 수집 이후 대입 — 그 전까진 null이라 exitJumpmap 미호출)
@@ -5343,6 +5753,7 @@ restoreAgentStates();
                 cushion.position.set(sx, seatH / 2, sz);
                 cushion.castShadow = true;
                 grp.add(cushion);
+                makeSittable(cushion, Math.atan2(-Math.cos(ang), -Math.sin(ang)), { drop: cushion.position.y });   // 테이블 중심 향해 앉기
             } else {
                 // 의자: 좌판 + 등받이
                 const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.1, 12), seatMat);
@@ -5355,6 +5766,7 @@ restoreAgentStates();
                 back.position.set(sx - Math.cos(ang) * 0.28, seatH + 0.27, sz - Math.sin(ang) * 0.28);
                 back.rotation.y = -ang;
                 grp.add(back);
+                makeSittable(seat, Math.atan2(-Math.cos(ang), -Math.sin(ang)), { drop: seatH });   // 테이블 중심 향해 앉기
             }
         }
         grp.position.set(x, 0, z);
@@ -5397,6 +5809,7 @@ restoreAgentStates();
         }
         grp.position.set(x, 0, z);
         grp.rotation.y = rotY;
+        makeSittable(grp, rotY);   // 선베드에 걸터앉기
         return grp;
     }
 
@@ -5437,6 +5850,191 @@ restoreAgentStates();
         );
         flame.position.y = 2.0;
         grp.add(flame);
+        grp.position.set(x, 0, z);
+        return grp;
+    }
+
+    // 바베큐 그릴 스테이션: 그릴 본체 + 숯불(발광)·불빛 + 석쇠 + 고기·채소 + 연기 + 좌측 준비대 + 스툴 2개(앉기 가능)
+    function makeBBQ(x, z, ry = 0) {
+        const grp = new THREE.Group();
+        const steel     = new THREE.MeshStandardMaterial({ color: 0x455A64, metalness: 0.6, roughness: 0.4 });
+        const darkSteel = new THREE.MeshStandardMaterial({ color: 0x263238, metalness: 0.5, roughness: 0.5 });
+        const grateMat  = new THREE.MeshStandardMaterial({ color: 0x9E9E9E, metalness: 0.7, roughness: 0.4 });
+        const woodMat   = new THREE.MeshStandardMaterial({ color: 0x8D6E47, roughness: 0.85 });
+
+        // 그릴 본체(사각 드럼) + 다리 4개 + 하단 선반(+장작)
+        const body = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.4, 0.7), steel);
+        body.position.y = 0.9; body.castShadow = true; grp.add(body);
+        for (const dx of [-0.55, 0.55]) for (const dz of [-0.25, 0.25]) {
+            const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.7, 6), darkSteel);
+            leg.position.set(dx, 0.35, dz); grp.add(leg);
+        }
+        const lowShelf = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.04, 0.55), darkSteel);
+        lowShelf.position.y = 0.2; grp.add(lowShelf);
+        for (let i = 0; i < 3; i++) {
+            const log = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.0, 6), woodMat);
+            log.rotation.z = Math.PI / 2; log.position.set(0, 0.28, -0.15 + i * 0.14); grp.add(log);
+        }
+
+        // 숯불(발광) + 불빛(포인트라이트, 그림자 없음)
+        const coals = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.08, 0.55),
+            new THREE.MeshStandardMaterial({ color: 0xFF5722, emissive: 0xFF3D00, emissiveIntensity: 1.5, roughness: 0.95 }));
+        coals.position.y = 1.09; grp.add(coals);
+        const fireLight = new THREE.PointLight(0xFF6D00, 2.0, 4.5, 1.8);
+        fireLight.position.set(0, 1.35, 0); grp.add(fireLight);
+
+        // 석쇠(그릴 봉 11개)
+        for (let i = -5; i <= 5; i++) {
+            const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.58, 6), grateMat);
+            bar.rotation.x = Math.PI / 2; bar.position.set(i * 0.11, 1.17, 0); grp.add(bar);
+        }
+
+        // 고기·채소(석쇠 위 6점)
+        const foods = [0x8D4B2A, 0x6D3B22, 0xC1440E, 0xE0A030, 0x4CAF50, 0xC0392B];
+        for (let i = 0; i < 6; i++) {
+            const fx = -0.45 + (i % 3) * 0.45, fz = (i < 3 ? -0.14 : 0.14);
+            const it = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.05, 0.14),
+                new THREE.MeshStandardMaterial({ color: foods[i], roughness: 0.7 }));
+            it.position.set(fx, 1.2, fz); it.castShadow = true; grp.add(it);
+        }
+
+        // 고기 익는 연기 — 석쇠 위에서 피어올라 커지고 옅어지는 연기 6점(매 프레임 애니메이션)
+        for (let i = 0; i < 6; i++) {
+            const puff = new THREE.Mesh(new THREE.SphereGeometry(0.12, 7, 7),
+                new THREE.MeshBasicMaterial({ color: 0xE8E8E8, transparent: true, opacity: 0.4, depthWrite: false }));
+            puff.position.set(0, 1.28, 0); grp.add(puff);
+            flameFX.smoke.push({ mesh: puff, x0: (i % 3 - 1) * 0.25, z0: 0, y0: 1.28,
+                rise: 1.7, phase: Math.random() * 4, dur: 2.6 + Math.random(), op0: 0.4, drift: 0.3 });
+        }
+
+        // 좌측 준비대(우드 상판 + 다리 4개) + 접시 2개(+식재료)
+        const prep = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.06, 0.6), woodMat);
+        prep.position.set(-1.5, 0.82, 0); prep.castShadow = true; grp.add(prep);
+        for (const dx of [-0.4, 0.4]) for (const dz of [-0.22, 0.22]) {
+            const l = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.82, 0.05), woodMat);
+            l.position.set(-1.5 + dx, 0.41, dz); grp.add(l);
+        }
+        for (const px of [-1.72, -1.3]) {
+            const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.02, 16),
+                new THREE.MeshStandardMaterial({ color: 0xECEFF1, roughness: 0.5 }));
+            plate.position.set(px, 0.86, 0); grp.add(plate);
+            const food = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.05, 0.14),
+                new THREE.MeshStandardMaterial({ color: 0xC0392B, roughness: 0.7 }));
+            food.position.set(px, 0.9, 0); grp.add(food);
+        }
+
+        // 스툴 2개(그릴 앞 −z, 그릴을 바라봄) — 앉기 가능
+        for (const sx of [-0.3, 0.35]) {
+            const s = new THREE.Group();
+            const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.06, 14), darkSteel);
+            seat.position.y = 0.5; seat.castShadow = true; s.add(seat);
+            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.5, 8), steel);
+            post.position.y = 0.25; s.add(post);
+            const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.03, 14), steel);
+            foot.position.y = 0.02; s.add(foot);
+            s.position.set(sx, 0, -1.15); grp.add(s);
+            makeSittable(s, ry);   // 그릴(+z 로컬)을 바라보고 앉기
+        }
+
+        grp.position.set(x, 0, z);
+        grp.rotation.y = ry;
+        return grp;
+    }
+
+    // 모닥불 + 불멍 공간: 돌 링·장작 + 잉걸(발광) + 흔들리는 불꽃·불티·불빛(애니메이션) + 둘러앉는 통나무 스툴 4개(앉기 가능)
+    function makeCampfire(x, z) {
+        const grp = new THREE.Group();
+        const stoneMat = new THREE.MeshStandardMaterial({ color: 0x9E9E9E, roughness: 0.95 });
+        const logMat   = new THREE.MeshStandardMaterial({ color: 0x5D4037, roughness: 0.9 });
+        const topMat   = new THREE.MeshStandardMaterial({ color: 0x8D6E47, roughness: 0.8 });
+
+        // 돌 테두리 8개
+        for (let i = 0; i < 8; i++) {
+            const a = (i / 8) * Math.PI * 2;
+            const st = new THREE.Mesh(new THREE.DodecahedronGeometry(0.16), stoneMat);
+            st.position.set(Math.cos(a) * 0.62, 0.1, Math.sin(a) * 0.62);
+            st.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+            st.castShadow = true; grp.add(st);
+        }
+        // 장작(우물 정#자 2단)
+        for (const lvl of [0, 1]) {
+            for (const off of [-0.2, 0.2]) {
+                const log = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.95, 8), logMat);
+                log.rotation.z = Math.PI / 2;
+                if (lvl === 0) log.position.set(0, 0.12, off);
+                else { log.rotation.y = Math.PI / 2; log.position.set(off, 0.24, 0); }
+                log.castShadow = true; grp.add(log);
+            }
+        }
+        // 잉걸(발광 숯 바닥)
+        const ember = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.4, 0.05, 12),
+            new THREE.MeshStandardMaterial({ color: 0xFF6D00, emissive: 0xFF3D00, emissiveIntensity: 1.6, roughness: 1 }));
+        ember.position.y = 0.05; grp.add(ember);
+
+        // 불꽃(반투명 원뿔 5개) — updateFlameFX에서 흔들림
+        const flameCols = [0xFF3D00, 0xFF6D00, 0xFF9800, 0xFFC107];
+        for (let i = 0; i < 5; i++) {
+            const r = i === 0 ? 0.24 : 0.13 + Math.random() * 0.06;
+            const h = 0.55 + Math.random() * 0.5;
+            const flame = new THREE.Mesh(new THREE.ConeGeometry(r, h, 8),
+                new THREE.MeshBasicMaterial({ color: flameCols[i % flameCols.length], transparent: true, opacity: 0.78, depthWrite: false }));
+            flame.position.set((Math.random() - 0.5) * 0.22, 0.18 + h / 2, (Math.random() - 0.5) * 0.22);
+            grp.add(flame);
+            flameFX.flames.push({ mesh: flame, speed: 5 + Math.random() * 4, phase: Math.random() * 6.28, op0: 0.78 });
+        }
+        // 불티(작은 발광 구 7개) — 위로 솟아올랐다 소멸 반복
+        for (let i = 0; i < 7; i++) {
+            const sp = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 6),
+                new THREE.MeshBasicMaterial({ color: 0xFFC107, transparent: true, opacity: 0.9, depthWrite: false }));
+            const ex = (Math.random() - 0.5) * 0.35, ez = (Math.random() - 0.5) * 0.35;
+            sp.position.set(ex, 0.3, ez); grp.add(sp);
+            flameFX.embers.push({ mesh: sp, x0: ex, z0: ez, y0: 0.3, rise: 1.5 + Math.random() * 0.9, speed: 0.25 + Math.random() * 0.2, phase: Math.random() });
+        }
+        // 불빛(깜빡이는 포인트라이트, 그림자 없음)
+        const L = new THREE.PointLight(0xFF7A1A, 3.0, 8, 1.6);
+        L.position.set(0, 0.8, 0); grp.add(L);
+        flameFX.lights.push({ light: L, base: 3.0, phase: Math.random() * 6.28 });
+
+        // 불멍 공간 — 둘러앉는 통나무 스툴 4개(불을 바라봄, 앉기 가능)
+        for (let i = 0; i < 4; i++) {
+            const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+            const sx = Math.cos(a) * 1.5, sz = Math.sin(a) * 1.5;
+            const stump = new THREE.Group();
+            const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.27, 0.46, 12), logMat);
+            seat.position.y = 0.23; seat.castShadow = true; stump.add(seat);
+            const top = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.02, 12), topMat);
+            top.position.y = 0.47; stump.add(top);
+            stump.position.set(sx, 0, sz); grp.add(stump);
+            makeSittable(stump, Math.atan2(-Math.cos(a), -Math.sin(a)));   // 불(중심)을 바라봄
+        }
+
+        // 불멍 즐기는 사람 2명 — 스툴(1·3)에 앉아 불을 바라보며 마시멜로 막대를 손에 쥠(나머지 스툴은 비움)
+        const campShirts = [0x00897B, 0xE64A19, 0x5E35B1, 0x1565C0];
+        for (const i of [1, 3]) {
+            const a = i * Math.PI / 2 + Math.PI / 4;
+            const p = createDetailedPerson(traitsFromSeed('guam-campfire-' + i, campShirts[i]));
+            p.group.scale.setScalar(0.9);
+            p.group.position.set(Math.cos(a) * 1.5, 0, Math.sin(a) * 1.5);   // 스툴 위치
+            p.group.rotation.y = Math.atan2(-Math.cos(a), -Math.sin(a));     // 불(중심)을 바라봄
+            updatePersonAnimation(p, 'sitting', 100, 0, 0, false);
+            // 오른팔을 불 쪽으로 뻗어 마시멜로 막대를 쥠 (막대는 손목에 부착 → 손 방향으로 뻗음)
+            p.armR.shoulder.rotation.x = -1.2;
+            p.armR.elbow.rotation.x = -0.5;
+            const stickG = new THREE.Group();   // wrist의 -y(손끝=불 쪽)로 막대가 뻗음
+            const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 1.1, 6),
+                new THREE.MeshStandardMaterial({ color: 0x6D4C33, roughness: 0.9 }));
+            stick.position.y = -0.62; stick.castShadow = true; stickG.add(stick);
+            const spinner = new THREE.Group();   // 마시멜로 회전(굽기)용
+            spinner.position.y = -1.2;
+            const marsh = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.09, 4, 8),
+                new THREE.MeshStandardMaterial({ color: 0xF3E4C4, roughness: 0.7, emissive: 0x2A1C08, emissiveIntensity: 0.3 }));
+            marsh.castShadow = true; spinner.add(marsh); stickG.add(spinner);
+            p.armR.wrist.add(stickG);
+            flameFX.marsh.push({ spinner, phase: Math.random() * 6.28 });
+            flameFX.people.push({ p, phase: Math.random() * 6.28 });   // 매 프레임 idle 애니메이션
+            grp.add(p.group);
+        }
+
         grp.position.set(x, 0, z);
         return grp;
     }
@@ -5580,6 +6178,10 @@ restoreAgentStates();
         scene.add(makePalm(cx + 4.5, cz + 3.5, 1.0));
         // 해먹
         scene.add(makeHammock(cx + 4.2, cz - 2.5));
+        // 바베큐장 (앞쪽 중앙 오픈 공간) — 별도 라벨 없이 GUAM 표지판만 유지
+        scene.add(makeBBQ(cx, cz - 4));
+        // 모닥불 + 불멍 공간 (BBQ 우측, 카바나 앞 오픈 공간)
+        scene.add(makeCampfire(cx + 3, cz - 4));
         // 티키 횃불 (입구 양옆)
         scene.add(makeTorch(cx - 3.2, cz + 3.2));
         scene.add(makeTorch(cx + 3.2, cz + 3.2));
@@ -5848,6 +6450,7 @@ const OFFICE_COMPLEX_OFFSET_Z = -16;
             const bigDesk = ocBx(2.4, 0.08, 1.0, ocDeskMat); bigDesk.position.set(0, 0.82, -hd + 2.2); g.add(bigDesk);
             const sofa = ocBx(2.2, 0.5, 0.7, new THREE.MeshStandardMaterial({ color: 0x37474f }));
             sofa.position.set(0, 0.25, hd - 1.8); g.add(sofa);
+            makeSittable(sofa, Math.PI, { drop: sofa.position.y });   // 방 중심(−z)을 바라보고 소파에 앉기
             const ct = ocBx(0.8, 0.06, 0.5, ocDeskMat); ct.position.set(0, 0.38, hd - 2.5); g.add(ct);
         }
 
@@ -6696,7 +7299,8 @@ function updatePersonLabels() {
 //   off로 돌리면 controls.listenToKeyEvents로 방향키를 다시 카메라 패닝에 돌려준다.
 // - 이동은 바닥 평면(y=PERSON_GROUND_Y)에서만 일어나고, 멈추면 서버에 위치를 영속화(드래그와 동일).
 
-const AVATAR_MOVE_SPEED = 6;   // 초당 씬 유닛 이동 속도
+const AVATAR_MOVE_SPEED = 6;   // 초당 씬 유닛 이동 속도(걷기)
+const AVATAR_RUN_SPEED = 10.5; // 달리기(방향키 더블탭) — 걷기의 ~1.75배
 const MOVE_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 
 // 3인칭 팔로우 카메라 — 아바타가 방향키(카메라 기준 상/하/좌/우)로 이동하는 동안,
@@ -6726,30 +7330,99 @@ function nearestInRange(pos, arr, range, yTol) {
     return best;
 }
 
-/** Enter/Space: 엘리베이터 우선 → 앉기/일어서기 */
+// 아바타(월드좌표) 기준 SIT_RANGE 내 가장 가까운 '앉을 곳'을 월드좌표로 반환.
+// 기존 등록 좌석(seats: envGroup 로컬) + 태그된 모든 의자(sittableObjects: 월드) 통합 검색.
+const _seatWP = new THREE.Vector3();
+function nearestSeatWorld(aw, range = SIT_RANGE, yTol = 1.5) {
+    let best = null, bestD = range * range;
+    const consider = (wx, wy, wz, yaw, massage) => {
+        if (Math.abs(wy - aw.y) > yTol) return;                 // 다른 층 제외
+        const dx = wx - aw.x, dz = wz - aw.z, d = dx * dx + dz * dz;
+        if (d < bestD) { bestD = d; best = { x: wx, y: wy, z: wz, yaw: yaw || 0, massage, dist: d }; }
+    };
+    // 1) 기존 등록 좌석(카페·식당·안마의자) — envGroup은 z만 오프셋하므로 x·y 그대로.
+    for (const s of seats) consider(s.x, s.y || 0, (s.z || 0) + envGroup.position.z, s.yaw, s.massage);
+    // 2) 태그된 모든 의자 — 월드좌표는 매번 계산(그룹 오프셋 자동 반영). 바닥y = 월드y − drop.
+    for (const it of sittableObjects) {
+        it.obj.getWorldPosition(_seatWP);
+        consider(_seatWP.x, _seatWP.y - (it.drop || 0), _seatWP.z, it.yaw, it.massage);
+    }
+    return best;
+}
+
+/** 아바타(월드좌표) 기준 TUBE_RANGE 내 가장 가까운 수영장 튜브(월드좌표) 반환. */
+function nearestTube(aw) {
+    let best = null, bestD = TUBE_RANGE * TUBE_RANGE;
+    for (const s of poolTubeSpots) {
+        const wx = s.x, wz = s.z + envGroup.position.z;
+        const dx = wx - aw.x, dz = wz - aw.z, d = dx * dx + dz * dz;
+        if (d < bestD) { bestD = d; best = { spot: s, x: wx, z: wz, dist: d }; }
+    }
+    return best;
+}
+
+/** 튜브 타기 시작 — 튜브를 허리에 끼고 풀 안으로 입수(표류·물놀이는 updateTubing에서). */
+function startTube(av, tube) {
+    tubingActive = true; tubingAvatarId = selectedAvatarId; tubingAngle = 0;
+    pressedMoveKeys.clear(); avatarRunning = false;
+    if (tube.spot.mesh) tube.spot.mesh.visible = false;   // 집어든 원래 튜브는 숨김
+    tubingTube = tube.spot.mesh;
+    // 허리에 끼는 튜브 링(아바타 자식)
+    tubingRing = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.15, 12, 24),
+        new THREE.MeshStandardMaterial({ color: 0xFFEB3B, roughness: 0.4 }));
+    tubingRing.rotation.x = Math.PI / 2; tubingRing.position.y = 0.42;   // 허리께
+    av.group.add(tubingRing);
+    // 풀 중심 근처(월드)로 입수 (물에 깊게 담김)
+    av.group.position.set(POOL.x, -0.45, POOL.z + envGroup.position.z + 0.8);
+    showSelectToast('🛟 튜브 타는 중 — Enter 또는 방향키로 나오기');
+}
+
+/** 튜브 타기 종료 — 튜브 반납 + 풀사이드로 복귀. */
+function exitTube() {
+    const av = tubingAvatarId && personAvatarMap.get(tubingAvatarId);
+    if (av) {
+        if (tubingRing) av.group.remove(tubingRing);
+        resetAvatarPose(tubingAvatarId);
+        av.group.position.set(POOL.x - POOL.w / 2 - 1.0, PERSON_GROUND_Y, POOL.z + envGroup.position.z);   // 풀사이드
+        av.group.rotation.y = -Math.PI / 2;
+        persistPersonPosition(tubingAvatarId);
+    }
+    if (tubingTube) tubingTube.visible = true;
+    tubingRing = null; tubingTube = null; tubingActive = false; tubingAvatarId = null;
+}
+
+/** Enter/Space: 튜브 → 엘리베이터 → 앉기/일어서기 (M 이동모드 없이도 동작) */
 function avatarInteract() {
-    if (!keyboardMoveEnabled || !selectedAvatarId) return;
+    if (tubingActive) { exitTube(); return; }   // 튜브 중이면 나오기(선택 무관)
+    // 선택이 없으면 내 아바타(없으면 가까운 아바타)를 자동 선택 → 이하 로직은 selectedAvatarId 기반.
+    if (!selectedAvatarId) {
+        const id = myPersonId || nearestAvatarId();
+        if (id) setSelectedAvatar(id);
+    }
+    if (!selectedAvatarId) { showSelectToast('앉을 아바타가 없습니다'); return; }
     const av = personAvatarMap.get(selectedAvatarId);
     if (!av) return;
     if (sittingSeat) { standUp(); return; }
-    // 아바타(월드) → 시설(envGroup 로컬): envGroup은 z만 오프셋. y(층)는 그대로.
-    const lp = { x: av.group.position.x, y: av.group.position.y, z: av.group.position.z - envGroup.position.z };
-    const seat = nearestInRange(lp, seats, SIT_RANGE, 1.5);          // 같은 층 좌석만
+    const aw = av.group.position;                                // 아바타 월드좌표
+    const lp = { x: aw.x, y: aw.y, z: aw.z - envGroup.position.z };
+    const tube = nearestTube(aw);                              // 수영장 튜브(최우선 — 풀사이드 전용)
+    if (tube) { startTube(av, tube); return; }
+    const seat = nearestSeatWorld(aw);                          // 모든 의자(월드) 중 최근접
     const ev = insideCafe(lp) ? nearestInRange(lp, elevatorZones, EV_RANGE, 1.5) : null;
-    const d2 = (o) => (o.x - lp.x) ** 2 + (o.z - lp.z) ** 2;
-    // 둘 다 근처면 '더 가까운 것' 우선 (안마의자 옆에서 엘리베이터가 열리지 않도록)
-    if (seat && ev) { if (d2(seat) <= d2(ev)) sitOn(av, seat); else openFloorMenu(); return; }
+    const evD = ev ? ((ev.x - lp.x) ** 2 + (ev.z - lp.z) ** 2) : Infinity;   // 로컬·월드 거리 동일(오프셋 상쇄)
+    // 둘 다 근처면 '더 가까운 것' 우선 (의자 옆에서 엘리베이터가 열리지 않도록)
+    if (seat && ev) { if (seat.dist <= evD) sitOn(av, seat); else openFloorMenu(); return; }
     if (seat) { sitOn(av, seat); return; }
     if (ev) { openFloorMenu(); return; }
     showSelectToast('가까운 의자·엘리베이터가 없습니다');
 }
 
-/** 좌석에 앉기: 좌석 위치·방향으로 스냅 + 앉은 자세 */
+/** 좌석에 앉기: (월드좌표) 위치·방향으로 스냅 + 앉은 자세 */
 function sitOn(av, s) {
-    sittingSeat = s;
-    pressedMoveKeys.clear();
-    av.group.position.set(s.x, s.y, s.z + envGroup.position.z);   // 좌석(로컬) → 아바타(월드)
-    av.group.rotation.y = s.yaw;
+    sittingSeat = s;                                            // {x,y,z,yaw,massage} — 모두 월드좌표
+    pressedMoveKeys.clear(); avatarRunning = false;
+    av.group.position.set(s.x, s.y, s.z);
+    av.group.rotation.y = s.yaw || 0;
     const po = av.personObj;
     if (po && po.legL) updatePersonAnimation(po, 'sitting', 100, 0, 0, false);
     showSelectToast('🪑 앉음 — 방향키 또는 Enter로 일어서기');
@@ -6763,6 +7436,101 @@ function standUp() {
     if (av) { resetAvatarPose(selectedAvatarId); av.group.position.y = floorY; }
 }
 
+/** 아이스크림 맛 선택 모달 (딸기·포도·초코·바닐라) */
+function openFlavorMenu() {
+    if (document.getElementById('flavor-menu') || eatingActive) return;
+    const flavors = [['딸기', '#FF6F91'], ['포도', '#8E44AD'], ['초코', '#6B4226'], ['바닐라', '#D9C27A']];
+    const ov = document.createElement('div');
+    ov.id = 'flavor-menu';
+    ov.style.cssText = 'position:fixed; inset:0; z-index:1700; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.5); font-family:sans-serif;';
+    const bx = document.createElement('div');
+    bx.style.cssText = 'background:#fff; color:#333; border:3px solid #E84B8A; border-radius:16px; padding:22px 26px; min-width:280px; text-align:center; box-shadow:0 12px 48px rgba(0,0,0,0.5);';
+    bx.innerHTML = '<div style="font-size:18px; font-weight:800; margin-bottom:14px; color:#E84B8A;">🍦 어떤 맛으로 드릴까요?</div>';
+    flavors.forEach(([name, col]) => {
+        const b = document.createElement('button');
+        b.textContent = name + '맛';
+        b.style.cssText = `display:block; width:100%; margin:6px 0; background:${col}; color:#fff; border:none; border-radius:10px; padding:11px 14px; font-size:15px; font-weight:800; cursor:pointer; font-family:inherit; text-shadow:0 1px 2px rgba(0,0,0,0.3);`;
+        b.onclick = () => { ov.remove(); giveIceCream(name); };
+        bx.appendChild(b);
+    });
+    const cancel = document.createElement('button');
+    cancel.textContent = '안 먹을래요';
+    cancel.style.cssText = 'margin-top:8px; background:#eee; color:#888; border:none; border-radius:8px; padding:7px 16px; font-size:13px; cursor:pointer; font-family:inherit;';
+    cancel.onclick = () => ov.remove();
+    bx.appendChild(cancel);
+    ov.appendChild(bx); document.body.appendChild(ov);
+    ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+}
+
+/** 선택한 맛 아이스크림을 아바타 오른손에 쥐여주고 먹기 시작(5초 후 자동 소멸) */
+function giveIceCream(flavor) {
+    if (!selectedAvatarId) { const id = myPersonId || nearestAvatarId(); if (id) setSelectedAvatar(id); }
+    if (!selectedAvatarId) { showSelectToast('받을 아바타가 없습니다'); return; }
+    const av = personAvatarMap.get(selectedAvatarId);
+    if (!av || !av.personObj || !av.personObj.armR) { showSelectToast('이 아바타는 아이스크림을 들 수 없어요'); return; }
+    if (eatingActive) endEating();
+    // 콘 + 스쿱 (오른손 손목에 부착, 손끝 −y 방향으로 뻗음)
+    const cone = new THREE.Group();
+    const waffle = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.2, 12), new THREE.MeshStandardMaterial({ color: 0xC8873E, roughness: 0.75 }));
+    waffle.position.y = -0.1;    // 뾰족한 끝이 손(그립) 쪽
+    cone.add(waffle);
+    const scoop = new THREE.Mesh(new THREE.SphereGeometry(0.085, 14, 12), new THREE.MeshStandardMaterial({ color: ICE_FLAVORS[flavor] || 0xFFF1C1, roughness: 0.55 }));
+    scoop.position.y = -0.24;    // 스쿱은 바깥(입가) 쪽
+    cone.add(scoop);
+    cone.position.set(0.02, -0.1, 0.03);
+    av.personObj.armR.wrist.add(cone);
+    eatingCone = cone; eatingActive = true; eatingAvatarId = selectedAvatarId; eatingTimer = 5.0;
+    pressedMoveKeys.clear(); avatarRunning = false;
+    showSelectToast(`🍦 ${flavor}맛 아이스크림 — 냠냠! (5초)`);
+}
+
+/** 아이스크림 먹기 종료 — 콘 제거 + 자세 복귀 */
+function endEating() {
+    const av = eatingAvatarId && personAvatarMap.get(eatingAvatarId);
+    if (av) {
+        if (eatingCone && av.personObj && av.personObj.armR) av.personObj.armR.wrist.remove(eatingCone);
+        resetAvatarPose(eatingAvatarId);
+    }
+    eatingActive = false; eatingAvatarId = null; eatingCone = null; eatingTimer = 0;
+}
+
+// 아이스크림 가게 — 알바생 스쿱 동작 + 아이스크림 먹는 아바타(5초 후 자동 종료)
+function updateIceCream(elapsed, delta) {
+    if (iceCreamStaff) {
+        const p = iceCreamStaff, t = elapsed;
+        updatePersonAnimation(p, 'idle', 100, t, delta, false);
+        p.torso.rotation.x = 0.16 + Math.sin(t * 2) * 0.04;                 // 쇼케이스 쪽으로 숙임
+        p.headGroup.rotation.x = 0.16;
+        p.armR.shoulder.rotation.x = -0.35 + Math.sin(t * 3) * 0.5;         // 스쿱 뜨기(아래로 담갔다 올림)
+        p.armR.shoulder.rotation.z = -0.35;
+        p.armR.elbow.rotation.x = -0.6 + Math.sin(t * 3 + 1) * 0.35;
+        p.armL.shoulder.rotation.x = -0.3; p.armL.shoulder.rotation.z = 0.35;   // 왼손은 콘 든 자세
+        p.armL.elbow.rotation.x = -1.2;
+    }
+    if (eatingActive && eatingAvatarId) {
+        eatingTimer -= delta;
+        if (eatingTimer <= 0) { endEating(); return; }
+        const av = personAvatarMap.get(eatingAvatarId);
+        if (!av) { endEating(); return; }
+        const po = av.personObj;
+        if (po && po.legL) {
+            updatePersonAnimation(po, 'idle', 100, elapsed, delta, false);
+            const bite = (Math.sin(elapsed * 5) + 1) / 2;                  // 0..1 한 입 주기(≈1.25초)
+            // 오른손 콘을 입가로 올렸다 내렸다 하며 한 입씩
+            po.armR.shoulder.rotation.x = -1.25 - bite * 0.5;
+            po.armR.shoulder.rotation.z = -0.4;
+            po.armR.elbow.rotation.x = -1.5 - bite * 0.4;                  // 팔꿈치 접어 입에 가까이
+            po.armR.wrist.rotation.x = bite * 0.4;                         // 손목 꺾어 핥기
+            // 고개 숙여 한 입 + 흐뭇하게 좌우로
+            po.headGroup.rotation.x = -0.05 + bite * 0.25;
+            po.headGroup.rotation.y = Math.sin(elapsed * 1.4) * 0.14;
+            po.torso.rotation.x = 0.05 + bite * 0.06;
+            po.torso.rotation.y = Math.sin(elapsed * 1.0) * 0.06;
+            po.armL.shoulder.rotation.z = 0.18;                            // 왼팔 자연스럽게
+        }
+    }
+}
+
 /** 엘리베이터 층 선택 모달 */
 function openFloorMenu() {
     if (document.getElementById('elevator-menu')) return;
@@ -6771,6 +7539,7 @@ function openFloorMenu() {
         { n: 2, label: '2F · 식당' },
         { n: 3, label: '3F · 매점' },
         { n: 4, label: '4F · 바디프렌드' },
+        { n: 5, label: '🌿 옥상 · 정원/버스킹' },
     ];
     const ov = document.createElement('div');
     ov.id = 'elevator-menu';
@@ -6803,7 +7572,7 @@ function gotoFloor(n) {
     const c = floorCenters[n];
     if (!c) return;
     if (sittingSeat) standUp();
-    pressedMoveKeys.clear();
+    pressedMoveKeys.clear(); avatarRunning = false;
     evMenuArmed = false;
     const wz = c.z + envGroup.position.z;   // 시설(로컬) → 월드 z
     av.group.position.set(c.x, c.y, wz);   // 해당 층 '센터'(월드)로 이동
@@ -6825,22 +7594,39 @@ function updateInteractHint() {
     }
     const show = (txt) => { sitHintEl.textContent = txt; sitHintEl.style.display = 'block'; };
     if (sittingSeat) { show('🪑 앉음 — 방향키 또는 Enter로 일어서기'); return; }
-    // 선택된 아바타만 있으면 됨(이동 모드가 아니어도, 드래그로 발판에 올려도 동작)
-    if (!selectedAvatarId) { sitHintEl.style.display = 'none'; evMenuArmed = true; return; }
-    const av = personAvatarMap.get(selectedAvatarId);
+    if (tubingActive) { show('🛟 튜브 물놀이 중 — 방향키 또는 Enter로 나오기'); return; }
+    if (eatingActive) { show('🍦 아이스크림 냠냠...'); return; }
+    // M 이동모드가 아니어도 내 아바타(또는 선택 아바타) 기준으로 힌트 표시.
+    const activeId = selectedAvatarId || myPersonId;
+    if (!activeId) { sitHintEl.style.display = 'none'; evMenuArmed = true; return; }
+    const av = personAvatarMap.get(activeId);
     if (!av) { sitHintEl.style.display = 'none'; return; }
-    const lp = { x: av.group.position.x, y: av.group.position.y, z: av.group.position.z - envGroup.position.z };   // 월드 → 시설 로컬
-    const seat = nearestInRange(lp, seats, SIT_RANGE, 1.5);          // 같은 층 좌석만
-    const ev = insideCafe(lp) ? nearestInRange(lp, elevatorZones, EV_RANGE, 1.5) : null;
-    const d2 = (o) => (o.x - lp.x) ** 2 + (o.z - lp.z) ** 2;
-    const evCloser = ev && (!seat || d2(ev) < d2(seat));   // 좌석이 더 가까우면 엘리베이터 자동팝업 억제
+    const aw = av.group.position;
+    const lp = { x: aw.x, y: aw.y, z: aw.z - envGroup.position.z };   // 월드 → 시설 로컬
+    // 아이스크림 가게 앞(월드 좌표) — 가까이 가면 맛 선택 팝업 자동 오픈, 멀어지면 닫기
+    const iceNear = Math.hypot(aw.x - ICE.x, aw.z - (ICE.z + ICE.d / 2 + 1.0)) < 2.6;
+    if (iceNear) {
+        if (iceMenuArmed && !document.getElementById('flavor-menu')) { iceMenuArmed = false; openFlavorMenu(); }
+        show('🍦 베스킨라빈스 — 맛을 골라보세요');
+        return;
+    }
+    iceMenuArmed = true;
+    { const fm = document.getElementById('flavor-menu'); if (fm) fm.remove(); }   // 멀어지면 맛 선택 팝업 닫기
+    const tube = nearestTube(aw);                                   // 수영장 튜브(풀사이드)
+    const seat = nearestSeatWorld(aw);                              // 모든 의자(월드) 중 최근접
+    // 엘리베이터 자동팝업은 기존대로 '선택 아바타'가 있을 때만(층 이동은 selectedAvatarId 기반).
+    const ev = (selectedAvatarId && insideCafe(lp)) ? nearestInRange(lp, elevatorZones, EV_RANGE, 1.5) : null;
+    if (!ev) { const m = document.getElementById('elevator-menu'); if (m) m.remove(); }   // 발판에서 멀어지면 층 선택 팝업 닫기
+    const evD = ev ? ((ev.x - lp.x) ** 2 + (ev.z - lp.z) ** 2) : Infinity;
+    const evCloser = ev && (!seat || evD < seat.dist);   // 좌석이 더 가까우면 엘리베이터 자동팝업 억제
     if (ev && evCloser) {
         if (evMenuArmed && !document.getElementById('elevator-menu')) { evMenuArmed = false; openFloorMenu(); }
         show('🛗 엘리베이터 — 층을 선택하세요');
         return;
     }
     evMenuArmed = true;   // 발판을 벗어나면 자동 오픈 재장전
-    if (keyboardMoveEnabled && seat) { show('🪑 Enter로 앉기'); return; }
+    if (tube) { show('🛟 Enter로 튜브 타고 놀기'); return; }
+    if (seat) { show('🪑 Enter로 앉기'); return; }
     sitHintEl.style.display = 'none';
 }
 
@@ -6956,7 +7742,7 @@ function toggleAvatarMove(force) {
         }
     } else {
         controls.listenToKeyEvents(window);  // 방향키를 카메라 패닝으로 복귀
-        pressedMoveKeys.clear();
+        pressedMoveKeys.clear(); avatarRunning = false;
         if (selectedAvatarId) {
             persistPersonPosition(selectedAvatarId);   // 종료 시 최종 위치 저장
             resetAvatarPose(selectedAvatarId);         // 걷기 → 정지 자세
@@ -6971,7 +7757,7 @@ function updateAvatarKeyboardMove(delta, elapsed) {
     if (!keyboardMoveEnabled || !selectedAvatarId || pressedMoveKeys.size === 0) return;
     const av = personAvatarMap.get(selectedAvatarId);
     if (!av || av === draggingAvatar) return;   // 드래그 중이면 키 이동 양보
-    if (sittingSeat) return;                     // 앉은 상태면 이동 안 함(방향키는 keydown에서 기립 처리)
+    if (sittingSeat || tubingActive || eatingActive) return;   // 앉음/튜브/먹는 중엔 이동 안 함(방향키는 keydown에서 처리)
 
     // 입력(카메라 기준): ↑ 화면 안쪽(카메라 전방), ↓ 뒤, ← 좌, → 우
     let inF = 0, inR = 0;
@@ -6993,7 +7779,7 @@ function updateAvatarKeyboardMove(delta, elapsed) {
     let mz = fwdZ * inF + rgtZ * inR;
     const ml = Math.hypot(mx, mz) || 1;
     mx /= ml; mz /= ml;
-    const step = AVATAR_MOVE_SPEED * delta;
+    const step = (avatarRunning ? AVATAR_RUN_SPEED : AVATAR_MOVE_SPEED) * delta;
     const prevY = av.group.position.y;
     const onUpperFloor = prevY > 1.5;   // 2층 이상(슬래브 위)
     let nx = av.group.position.x + mx * step;
@@ -7031,7 +7817,7 @@ function updateAvatarKeyboardMove(delta, elapsed) {
     // 걷기 모션(양팔·다리 흔들기) — 팔·다리 구조가 있는 상세 캐릭터에만 적용
     const po = av.personObj;
     if (po && po.armL && po.legL) {
-        updatePersonAnimation(po, 'leisure-walking', 100, elapsed, delta, false);
+        updatePersonAnimation(po, avatarRunning ? 'running' : 'leisure-walking', 100, _runStepPhase, delta, false);
     }
 
     // ---- 팔로우 카메라: 시야 각도·줌·높이 유지, 아바타를 따라 평행 이동만 (회전 없음 → 어지럼 없음) ----
@@ -7061,11 +7847,9 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'Enter') {
         const t = e.target;
         const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
-        if (!typing && !document.getElementById('elevator-menu')) {
+        if (!typing && !document.getElementById('elevator-menu') && !document.getElementById('flavor-menu')) {
             e.preventDefault();
-            if (!keyboardMoveEnabled) { showSelectToast('먼저 M키(또는 🎮 버튼)로 이동 모드를 켜세요'); return; }
-            if (!selectedAvatarId) { showSelectToast('이동할 아바타를 클릭해 선택하세요'); return; }
-            avatarInteract();
+            avatarInteract();   // M 모드 없이도 앉기/일어서기 (내부에서 아바타 자동 선택)
             return;
         }
     }
@@ -7073,7 +7857,9 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         if (sittingSeat) standUp();                    // 앉은 상태에서 방향키 → 먼저 일어섬
-        if (selectedAvatarId) pressedMoveKeys.add(e.code);
+        if (tubingActive) exitTube();                  // 튜브 중 방향키 → 나오기
+        if (eatingActive) endEating();                 // 먹는 중 방향키 → 그만 먹기
+        if (selectedAvatarId) { noteMoveTapForRun(e.code, e.timeStamp, e.repeat); pressedMoveKeys.add(e.code); }
     }
 }, true);
 
@@ -7081,6 +7867,7 @@ window.addEventListener('keyup', (e) => {
     if (MOVE_KEYS.has(e.code) && pressedMoveKeys.has(e.code)) {
         pressedMoveKeys.delete(e.code);
         if (pressedMoveKeys.size === 0 && selectedAvatarId) {
+            avatarRunning = false;                     // 멈추면 달리기 해제(다시 뛰려면 더블탭)
             persistPersonPosition(selectedAvatarId);   // 이동을 멈추면 위치 저장
             resetAvatarPose(selectedAvatarId);         // 걷기 → 정지 자세
         }
@@ -7103,21 +7890,8 @@ window.addEventListener('keyup', (e) => {
     selectionRing.userData.pin = pin;
 })();
 
-// 좌하단 토글 버튼 생성
-(function initMoveToggleButton() {
-    const btn = document.createElement('button');
-    btn.id = 'avatar-move-toggle';
-    btn.style.cssText = [
-        'position:absolute', 'left:10px', 'bottom:10px', 'z-index:20',
-        'background:rgba(0,0,0,0.6)', 'color:#fff', 'border:1px solid #555',
-        'border-radius:8px', 'padding:8px 12px', 'font-family:monospace',
-        'font-size:12px', 'cursor:pointer', 'backdrop-filter:blur(4px)',
-        'text-align:left', 'min-width:190px',
-    ].join(';');
-    btn.addEventListener('click', () => toggleAvatarMove());
-    document.body.appendChild(btn);
-    updateMoveToggleLabel();
-})();
+// 좌하단 '방향키 이동모드' 토글 버튼은 제거함(요청). M 키로 계속 토글 가능하며,
+// updateMoveToggleLabel()은 버튼이 없으면 no-op 처리된다.
 
 // ---- WebSocket ----
 // 에이전트별 직전 상태(working/idle) — working→idle 전이 시 '에이전트 완료' OS 알림용
@@ -7412,6 +8186,10 @@ window.addEventListener('keydown', (e) => {
     // 이동 키 — 텍스트 입력 중에는 무시
     if (MY_MOVE_KEYS.has(e.code) && !_isTyping()) {
         e.preventDefault(); // 화살표 키의 페이지 스크롤 방지
+        if (sittingSeat && selectedAvatarId === myPersonId) standUp();   // 앉아 있으면 방향키로 기립(비M 모드)
+        if (tubingActive && tubingAvatarId === myPersonId) exitTube();   // 튜브 중 방향키 → 나오기
+        if (eatingActive && eatingAvatarId === myPersonId) endEating();  // 먹는 중 방향키 → 그만 먹기
+        noteMoveTapForRun(e.code, e.timeStamp, e.repeat);   // 같은 방향키 더블탭 → 달리기
         keysDown.add(e.code);
         return;
     }
@@ -7455,13 +8233,13 @@ function _exitToTower() {
 window.addEventListener('keyup', (e) => {
     if (MY_MOVE_KEYS.has(e.code)) {
         keysDown.delete(e.code);
-        // 마지막 이동 키를 뗄 때 즉시 서버 저장
-        if (keysDown.size === 0) _saveMyPosition();
+        // 마지막 이동 키를 뗄 때 즉시 서버 저장 + 달리기 해제(다시 뛰려면 더블탭)
+        if (keysDown.size === 0) { avatarRunning = false; _saveMyPosition(); }
     }
 });
 
 // 포커스 잃을 때 이동 키 초기화 (Alt+Tab 등으로 전환 시 키 stuck 방지)
-window.addEventListener('blur', () => { keysDown.clear(); });
+window.addEventListener('blur', () => { keysDown.clear(); avatarRunning = false; });
 
 // ---- 점프 착지면(jumpTargets) 1회 수집 ----
 // 이 시점에는 정적 환경(바닥·슬래브·가구)만 envGroup에 있고, 플레이어 아바타는
