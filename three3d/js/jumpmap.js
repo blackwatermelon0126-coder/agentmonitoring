@@ -13,6 +13,8 @@
 //   scene.js가 담당한다.
 // ============================================
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // updateJumpmap에서 매 프레임 애니메이션할 포탈 목록
 const _portals = [];
@@ -25,10 +27,165 @@ const _waxShells = [];   // 발판 waxIdx와 1:1 — [{ pieces, queue, timer, br
 const _shards = [];      // 튀는 왁스 파편 [{ mesh, mat, vx, vy, vz, rx, rz, age, life }]
 const _shardGeo = new THREE.BoxGeometry(1, 1, 1);   // 공유 지오메트리(파편 크기는 scale로)
 let _audioCtx = null;    // 조각 "톡" 사운드용 lazy AudioContext(첫 사용 시 생성) — 크런치는 mp3 재생
-const WAX_MAT = new THREE.MeshStandardMaterial({ color: 0xF7EAD0, roughness: 0.5, metalness: 0.0, emissive: 0xFFF3D8, emissiveIntensity: 0.15 });
+// 왁스 코팅 — 광택 파라핀 느낌. clearcoat(Physical)는 조각 수백 개에 쓰기엔 셰이더가 무거워
+// 점프 버벅임을 유발했다 → 저 roughness Standard로 광택을 내되 비용은 기존 수준 유지.
+const WAX_MAT = new THREE.MeshStandardMaterial({
+    color: 0xFBF0D8, roughness: 0.26, metalness: 0.06,
+    emissive: 0xFFF3D8, emissiveIntensity: 0.12,
+});
+// 속 발판 — 버터 스틱(연한 크림색·둥근 모서리·밟으면 출렁). 실물 버터바 레퍼런스 기준.
+const BUTTER_MAT = new THREE.MeshStandardMaterial({
+    color: 0xF5ECBB, roughness: 0.42, metalness: 0.0,
+    emissive: 0xFFF3C4, emissiveIntensity: 0.1,
+});
+
+// ---- 버터 포장 프린트("SALTED / BUTTER / 4oz.") — 파란 잉크, 투명 배경 데칼 텍스처 ----
+let _butterTopTex = null, _butterSideTex = null;
+function butterTopTex() {
+    if (_butterTopTex) return _butterTopTex;
+    // 가로로 긴 발판 윗면(약 2.3:1) 비율에 맞춘 와이드 레이아웃 — 실물 버터바 인쇄 배치
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 224;
+    const x = c.getContext('2d');
+    x.fillStyle = '#2B6CB0'; x.textAlign = 'center';
+    x.font = 'bold 22px sans-serif';
+    x.fillText('SALTED', 330, 62);
+    x.font = 'bold 76px sans-serif';
+    x.fillText('BUTTER', 330, 136);
+    x.font = 'bold 30px sans-serif';
+    x.fillText('4oz.', 92, 118);
+    x.font = 'bold 20px sans-serif';
+    x.fillText('NET WT. (113 G)', 330, 178);
+    _butterTopTex = new THREE.CanvasTexture(c);
+    _butterTopTex.colorSpace = THREE.SRGBColorSpace;
+    return _butterTopTex;
+}
+function butterSideTex() {
+    if (_butterSideTex) return _butterSideTex;
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 96;
+    const x = c.getContext('2d');
+    x.fillStyle = '#2B6CB0'; x.textAlign = 'center';
+    x.font = 'bold 30px sans-serif';
+    x.fillText('4oz.', 96, 60);
+    x.font = 'bold 58px sans-serif';
+    x.fillText('BUTTER', 300, 68);
+    _butterSideTex = new THREE.CanvasTexture(c);
+    _butterSideTex.colorSpace = THREE.SRGBColorSpace;
+    return _butterSideTex;
+}
+/** 버터 블록(바닥 원점, w×0.4×d)에 포장 프린트 데칼(윗면 + 4옆면)을 붙인다 — 왁스가 깨지면 드러남 */
+function addButterPrint(p, w, d) {
+    const topMat = new THREE.MeshStandardMaterial({ map: butterTopTex(), transparent: true, roughness: 0.42 });
+    const sideMat = new THREE.MeshStandardMaterial({ map: butterSideTex(), transparent: true, roughness: 0.42 });
+    const top = new THREE.Mesh(new THREE.PlaneGeometry(w - 0.35, d - 0.35).rotateX(-Math.PI / 2), topMat);
+    top.position.y = 0.406;
+    p.add(top);
+    const sw = w - 0.4, sh = 0.26;
+    const mk = (rx, rz, ry, ww) => {
+        const m = new THREE.Mesh(new THREE.PlaneGeometry(ww, sh), sideMat);
+        m.position.set(rx, 0.2, rz);
+        m.rotation.y = ry;
+        p.add(m);
+    };
+    mk(0, d / 2 + 0.006, 0, sw);                 // +z(정면)
+    mk(0, -d / 2 - 0.006, Math.PI, sw);          // -z
+    mk(w / 2 + 0.006, 0, Math.PI / 2, d - 0.4);  // +x
+    mk(-w / 2 - 0.006, 0, -Math.PI / 2, d - 0.4); // -x
+}
 
 function mat(color, opts = {}) {
     return new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.2, ...opts });
+}
+
+// ---- 키캡 브랜치 상태 — 밟으면 클릭음 + RGB 백라이트 플래시 + 눌림 애니 ----
+const _keycaps = [];   // [{ body, plate, glow, baseY, plateY, glowState, pressT, hue }]
+
+// ---- 퐁실 푸딩 상태 — 버터 사이 징검다리. 밟으면 보잉음 + 젤리 출렁 ----
+const _puddings = [];   // [{ jelly, wobbleT, phase }]
+
+/** 키캡 상판 각인 텍스처(투명 배경) — map·emissiveMap 겸용. ink=글자색, wu=키 폭(u — 와이드 키 비율 유지) */
+function keycapTex(ch, ink = '#FFFFFF', wu = 1) {
+    const c = document.createElement('canvas');
+    c.width = Math.round(128 * Math.min(4, wu)); c.height = 128;
+    const x = c.getContext('2d');
+    x.fillStyle = ink; x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.font = `bold ${[...ch].length > 1 ? 44 : 72}px sans-serif`;   // 'Ctrl' 같은 다중 글자는 축소
+    x.fillText(ch, c.width / 2, 68);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+}
+
+/** 푸딩 보잉음 — 사인 피치가 출렁 내려갔다 되튕기는 "보용~"(WebAudio 합성, 파일 불필요) */
+function _boing() {
+    try {
+        if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = _audioCtx;
+        if (ctx.state === 'suspended') ctx.resume();
+        const t0 = ctx.currentTime;
+        const osc = ctx.createOscillator(), g = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(340, t0);
+        osc.frequency.exponentialRampToValueAtTime(120, t0 + 0.16);
+        osc.frequency.exponentialRampToValueAtTime(190, t0 + 0.24);   // 되튕김
+        osc.frequency.exponentialRampToValueAtTime(130, t0 + 0.34);
+        g.gain.setValueAtTime(0.12, t0);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.38);
+        osc.connect(g); g.connect(ctx.destination);
+        osc.start(t0); osc.stop(t0 + 0.4);
+    } catch { /* 오디오 불가 환경 — 무음 진행 */ }
+}
+
+/** 기계식 키보드 클릭음 — 고주파 클릭 + 저주파 보텀아웃(WebAudio 합성, 파일 불필요) */
+function _keyClick() {
+    try {
+        if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = _audioCtx;
+        if (ctx.state === 'suspended') ctx.resume();
+        const t0 = ctx.currentTime;
+        const osc = ctx.createOscillator(), g = ctx.createGain();   // "딸깍" 클릭
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(2400 + Math.random() * 500, t0);
+        osc.frequency.exponentialRampToValueAtTime(800, t0 + 0.03);
+        g.gain.setValueAtTime(0.11, t0);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.05);
+        osc.connect(g); g.connect(ctx.destination);
+        osc.start(t0); osc.stop(t0 + 0.06);
+        const osc2 = ctx.createOscillator(), g2 = ctx.createGain(); // "톡" 보텀아웃
+        osc2.type = 'triangle';
+        osc2.frequency.setValueAtTime(150, t0 + 0.015);
+        g2.gain.setValueAtTime(0.14, t0 + 0.015);
+        g2.gain.exponentialRampToValueAtTime(0.001, t0 + 0.09);
+        osc2.connect(g2); g2.connect(ctx.destination);
+        osc2.start(t0 + 0.015); osc2.stop(t0 + 0.1);
+    } catch { /* 오디오 불가 환경 — 무음 진행 */ }
+}
+
+/** 키캡 착지 훅 — scene.js _onJumpmapLanded에서 호출. 클릭음 + 백라이트 + 눌림. */
+export function onKeycapStep(mesh) {
+    const idx = mesh && mesh.userData.keycapIdx;
+    const kc = _keycaps[idx];
+    if (!kc) return;
+    _lastWalkKeyIdx = idx;   // 착지 직후 걷기 훅이 같은 키를 중복 발동하지 않게 동기화
+    kc.glowState = 1;
+    kc.pressT = 0;
+    _keyClick();
+}
+
+/** 키캡 걷기 훅 — 걷는 동안 매 프레임 발밑 메시로 호출(scene.js updateSelfVertical).
+ *  다른 키로 넘어가는 순간마다 클릭음 + 백라이트 발동 → 키보드 위를 "타이핑하듯" 걷는다. */
+let _lastWalkKeyIdx = -1;
+export function onKeycapWalk(mesh) {
+    const idx = mesh && mesh.userData.keycapIdx;
+    if (idx === undefined || idx === null) { _lastWalkKeyIdx = -1; return; }   // 키캡 밖 — 리셋
+    if (idx === _lastWalkKeyIdx) return;                                        // 같은 키 위 — no-op(저렴)
+    _lastWalkKeyIdx = idx;
+    const kc = _keycaps[idx];
+    if (!kc) return;
+    kc.glowState = 1;
+    kc.pressT = 0;
+    _keyClick();
 }
 
 // ---- 타워 외벽(창문 격자) 캔버스 텍스처 — 가구 없이 "겉만" 저비용 표현 ----
@@ -176,6 +333,184 @@ export function createJumpTower(pos) {
     };
 }
 
+// ---- 테트리스 타워 외벽 — 테트리스 보드(쌓인 블록 + 낙하 중인 피스) 캔버스 텍스처 ----
+function makeTetrisFacadeTexture() {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 1024;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#0d1117'; ctx.fillRect(0, 0, c.width, c.height);
+    const cols = 8, rows = 32;
+    const cw = c.width / cols, ch = c.height / rows;
+    const palette = ['#26C6DA', '#5C7CFA', '#FFA726', '#FFD54F', '#66BB6A', '#AB47BC', '#EF5350'];
+    const block = (col, row, color) => {
+        const x = col * cw, y = row * ch;
+        ctx.fillStyle = color; ctx.fillRect(x + 1, y + 1, cw - 2, ch - 2);
+        ctx.fillStyle = 'rgba(255,255,255,.28)'; ctx.fillRect(x + 1, y + 1, cw - 2, ch * 0.2);
+        ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.fillRect(x + 1, y + ch - ch * 0.18, cw - 2, ch * 0.18 - 1);
+    };
+    // 희미한 그리드
+    ctx.strokeStyle = 'rgba(255,255,255,.05)';
+    for (let i = 1; i < cols; i++) { ctx.beginPath(); ctx.moveTo(i * cw, 0); ctx.lineTo(i * cw, c.height); ctx.stroke(); }
+    for (let j = 1; j < rows; j++) { ctx.beginPath(); ctx.moveTo(0, j * ch); ctx.lineTo(c.width, j * ch); ctx.stroke(); }
+    // 아래쪽 절반: 빈틈 섞인 블록 더미(결정적 패턴 — 텍스처 4면 재사용에도 자연스러움)
+    for (let row = 17; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+            if (((row * 5 + col * 3) % 7) === 0) continue;         // 군데군데 구멍
+            block(col, row, palette[(row * 3 + col * 5) % palette.length]);
+        }
+    }
+    // 위쪽: 낙하 중인 T·L 피스
+    [[3, 5], [2, 6], [3, 6], [4, 6]].forEach(([col, row]) => block(col, row, '#AB47BC'));
+    [[6, 11], [6, 12], [6, 13], [7, 13]].forEach(([col, row]) => block(col, row, '#FFA726'));
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    return tex;
+}
+
+// ---- 테트리스 순위판(타워 정면) — 캔버스 텍스처. refreshTetrisRanking으로 갱신 ----
+let _tetrisRankCv = null, _tetrisRankTex = null;
+
+/** 순위판 캔버스 다시 그리기(TOP 5). list: [{ name, score }] 점수 내림차순 */
+function _drawTetrisRanking(list) {
+    if (!_tetrisRankCv) return;
+    const c = _tetrisRankCv, x = c.getContext('2d');
+    x.clearRect(0, 0, c.width, c.height);
+    x.fillStyle = '#0d1117'; x.fillRect(0, 0, c.width, c.height);
+    x.strokeStyle = '#E040FB'; x.lineWidth = 6;
+    x.strokeRect(3, 3, c.width - 6, c.height - 6);
+    x.fillStyle = '#E040FB'; x.textAlign = 'center'; x.textBaseline = 'alphabetic';
+    x.font = 'bold 42px sans-serif';
+    x.fillText('🏆 TETRIS TOP 5', c.width / 2, 60);
+    x.strokeStyle = 'rgba(224,64,251,.4)'; x.lineWidth = 2;
+    x.beginPath(); x.moveTo(28, 80); x.lineTo(c.width - 28, 80); x.stroke();
+    if (!Array.isArray(list) || !list.length) {
+        x.fillStyle = '#546E7A'; x.font = 'bold 28px sans-serif';
+        x.fillText('아직 기록이 없어요', c.width / 2, 220);
+        x.fillText('포탈에서 SPACE — 1등을 노려보세요!', c.width / 2, 262);
+    } else {
+        const medals = ['🥇', '🥈', '🥉'];
+        list.slice(0, 5).forEach((t, i) => {
+            const y = 134 + i * 56;
+            x.textAlign = 'left'; x.fillStyle = '#ECEFF1'; x.font = 'bold 30px sans-serif';
+            x.fillText(`${medals[i] || (i + 1) + '.'} ${t.name}`, 32, y, 330);   // maxWidth로 긴 이름 압축
+            x.textAlign = 'right'; x.fillStyle = '#FFD54F';
+            x.fillText(Number(t.score).toLocaleString(), c.width - 32, y);
+        });
+    }
+    if (_tetrisRankTex) _tetrisRankTex.needsUpdate = true;
+}
+
+/**
+ * 테트리스 순위판 갱신 — scene.js에서 호출(테트리스 종료 시·WS tetris-ranking 수신 시).
+ * ranking을 주면 그대로 그리고, 없으면 서버에서 조회(실패 시 기존 표시 유지).
+ */
+export function refreshTetrisRanking(ranking) {
+    if (Array.isArray(ranking)) { _drawTetrisRanking(ranking); return; }
+    fetch('/api/tetris/ranking')
+        .then((r) => r.json())
+        .then((d) => _drawTetrisRanking(d.ranking || []))
+        .catch(() => { /* 서버 불가 — 기존 표시 유지 */ });
+}
+
+/** 단위 큐브 4개짜리 3D 테트로미노 장식. cells: [[x,y],...] (로컬 격자), s: 큐브 한 변. */
+function makeTetromino3D(cells, color, s = 1.0) {
+    const g = new THREE.Group();
+    const m = mat(color, { roughness: 0.4, emissive: color, emissiveIntensity: 0.25 });
+    for (const [cx, cy] of cells) {
+        const cube = new THREE.Mesh(new THREE.BoxGeometry(s, s, s), m);
+        cube.position.set(cx * s, cy * s + s / 2, 0);
+        cube.castShadow = true;
+        g.add(cube);
+    }
+    return g;
+}
+
+/**
+ * 테트리스 타워(겉모습만) + 입구 앞 포탈. 왁뿌 타워와 동일하게 scene 루트에 추가할 것.
+ * 포탈은 맵 전환이 아니라 테트리스 오버레이(tetris.js) 실행 트리거 — 처리와 근접 판정은 scene.js 담당.
+ * @param {{x:number, z:number}} pos 타워가 설 월드 위치(지면 y=0)
+ * @returns {{ group: THREE.Group, portal: {x:number,z:number,y:number,r:number} }}
+ */
+export function createTetrisTower(pos) {
+    const g = new THREE.Group();
+    g.position.set(pos.x, 0, pos.z);
+
+    const W = 6, D = 6, H = 16;
+    const baseY = 0.6;
+
+    // 지반 플린스
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(W + 2.4, baseY, D + 2.4), mat(0x455A64, { roughness: 0.95 }));
+    plinth.position.y = baseY / 2;
+    plinth.castShadow = true; plinth.receiveShadow = true;
+    g.add(plinth);
+
+    // 본체 — 테트리스 보드 텍스처
+    const body = new THREE.Mesh(
+        new THREE.BoxGeometry(W, H, D),
+        new THREE.MeshStandardMaterial({ map: makeTetrisFacadeTexture(), roughness: 0.5, metalness: 0.2 })
+    );
+    body.position.y = baseY + H / 2;
+    body.castShadow = true; body.receiveShadow = true;
+    g.add(body);
+
+    // 상단 캡 + 옥상의 T-피스 조형물(타워 시그니처)
+    const capY = baseY + H;
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(W + 0.7, 0.8, D + 0.7), mat(0x37474F));
+    cap.position.y = capY + 0.4; cap.castShadow = true; g.add(cap);
+
+    const roofT = makeTetromino3D([[-1, 0], [0, 0], [1, 0], [0, 1]], 0xAB47BC, 1.2);
+    roofT.position.set(0, capY + 0.8, 0);
+    roofT.rotation.y = Math.PI / 6;
+    g.add(roofT);
+
+    // 입구 좌우 기단 장식 — 기대 세운 L·I 피스
+    const baseL = makeTetromino3D([[0, 0], [0, 1], [0, 2], [1, 0]], 0xFFA726, 0.55);
+    baseL.position.set(-W / 2 - 1.0, baseY, D / 2 - 0.6);
+    baseL.rotation.y = Math.PI / 5;
+    g.add(baseL);
+    const baseI = makeTetromino3D([[0, 0], [0, 1], [0, 2], [0, 3]], 0x26C6DA, 0.55);
+    baseI.position.set(W / 2 + 1.0, baseY, D / 2 - 0.6);
+    baseI.rotation.z = -0.16;                              // 살짝 기울여 세워둔 느낌
+    g.add(baseI);
+
+    // 입구(정면 +z) — 문틀 + 간판
+    const door = new THREE.Mesh(new THREE.BoxGeometry(2.8, 3.2, 0.3), mat(0x1c262b));
+    door.position.set(0, baseY + 1.6, D / 2 + 0.02); g.add(door);
+
+    const sign = new THREE.Mesh(
+        new THREE.PlaneGeometry(4.4, 1.1),
+        new THREE.MeshBasicMaterial({ map: makeSignTexture('테트리스 타워', 'TETRIS ▸ PLAY', '#0d1117', '#E040FB') })
+    );
+    sign.position.set(0, baseY + 5.0, D / 2 + 0.12); g.add(sign);
+
+    // 순위판(정면, 간판 위) — 서버 리더보드 TOP 5. refreshTetrisRanking이 캔버스를 갱신한다.
+    _tetrisRankCv = document.createElement('canvas');
+    _tetrisRankCv.width = 512; _tetrisRankCv.height = 384;
+    _tetrisRankTex = new THREE.CanvasTexture(_tetrisRankCv);
+    _tetrisRankTex.colorSpace = THREE.SRGBColorSpace;
+    _tetrisRankTex.anisotropy = 4;
+    const rankBoard = new THREE.Mesh(
+        new THREE.PlaneGeometry(4.6, 3.45),
+        new THREE.MeshBasicMaterial({ map: _tetrisRankTex })
+    );
+    rankBoard.position.set(0, baseY + 8.2, D / 2 + 0.12);
+    g.add(rankBoard);
+    _drawTetrisRanking([]);        // 로드 전 빈 보드 즉시 렌더(텍스처 공백 방지)
+    refreshTetrisRanking();        // 서버 순위 조회
+
+    // 입구 앞 포탈(+z 쪽 지면) — 마젠타(왁뿌 시안·리턴 주황과 구분)
+    const portalLocalZ = D / 2 + 2.4;
+    const portal = makePortal(0xE040FB, 1.25);
+    portal.group.position.set(0, 0, portalLocalZ);
+    g.add(portal.group);
+
+    return {
+        group: g,
+        portal: { x: pos.x, z: pos.z + portalLocalZ, y: 0, r: 1.25 },
+    };
+}
+
 /**
  * 점프맵 공간(최초 숨김). 오피스에서 멀리 떨어진 별도 영역에 바닥 + 스폰 + 리턴 포탈 +
  *   안내판(+ 제작 참고용 예시 발판 몇 개)을 배치한다. 실제 점프 발판은 추후 이 그룹 안에 추가.
@@ -216,41 +551,68 @@ export function createJumpMapArea(origin) {
     );
     guide.position.set(0, 3.2, -4); g.add(guide);
 
-    // ---- 왁뿌 코스: 중심 나선(반경 3.2, 45°/스텝)으로 상승하는 왁스 발판 12개 + 골 ----
+    // ---- 왁뿌 코스: 중심 나선(반경 3.2, 45°/스텝)으로 상승하는 왁스 발판 + 골 — 단일 루트 ----
     // 점프 물리(scene.js JUMP_SPEED 8·GRAVITY 22 → 최고 상승 1.45, +1.0 상승 착지 수평거리 ≈2.8)에 맞춰
     // 이웃 발판 중심거리 2.45·상승 1.0으로 배치. 1번 발판(top 0.6)은 STEP_UP(0.6) 이내 → 걸어 올라 시작.
+    // 6번째 스텝(i=5, top 5.6) 자리는 발판 대신 기계식 키보드 다리(아래 키캡 구간)가 코스 중간을
+    // 잇는다: idx4(4.6) → 키보드(5.85 평탄) → idx6(6.6, +0.75 점프). idx4→idx6 직접 점프는
+    // 상승 2.0이라 불가 → 키보드가 유일한 길(루트 단일화).
     _waxShells.length = 0;
     const RINGC = { x: 0, z: 8 }, RINGR = 3.2;
     const specs = [];
     for (let i = 0; i < 12; i++) {
+        if (i === 5) continue;                   // 이 자리는 키보드 다리가 대체
+        if (i === 2) continue;                   // 3번째 스텝 자리는 퐁실 푸딩이 대체
         const a = Math.PI + (Math.PI / 4) * i;   // 스폰 쪽(남)에서 시작해 나선 상승(1.5바퀴)
-        specs.push({ x: RINGC.x + Math.sin(a) * RINGR, z: RINGC.z + Math.cos(a) * RINGR, top: 0.6 + i, w: 2, d: 2 });
+        specs.push({ x: RINGC.x + Math.sin(a) * RINGR, z: RINGC.z + Math.cos(a) * RINGR, top: 0.6 + i, w: 3.2, d: 1.6 });   // 버터 스틱 비율(가로로 긴 직사각형)
     }
-    specs.push({ x: -0.6, z: 8.6, top: 12.2, w: 3, d: 3, goal: true });   // 골(마지막에서 +0.6 상승·거리 ≈2.3)
+    specs.push({ x: -0.6, z: 8.6, top: 12.2, w: 4, d: 2.4, goal: true });   // 골(마지막에서 +0.6 상승·거리 ≈2.3) — 큰 버터 스틱
 
     specs.forEach((s, i) => {
-        // 속 발판 — 왁스가 깨지면 드러나는 파스텔 컬러(단계별 색상환).
-        // emissive 동색: 밤·비 등 어두운 조명에서도 "깨짐 → 색 드러남" 대비가 살아있게.
-        const innerHex = new THREE.Color().setHSL((i * 0.083) % 1, 0.6, 0.55).getHex();
-        const p = new THREE.Mesh(
-            new THREE.BoxGeometry(s.w, 0.4, s.d),
-            mat(innerHex, { roughness: 0.55, emissive: innerHex, emissiveIntensity: 0.3 })
-        );
-        p.position.set(s.x, s.top - 0.2, s.z);
+        // 속 발판 — 버터 말랑이: 둥근 모서리 버터 블록. 바닥 기준 스케일(밟으면 위가 눌리는 스퀴시)을
+        // 위해 지오메트리 원점을 바닥면으로 내려 굽는다(geometry.translate).
+        const bGeo = new RoundedBoxGeometry(s.w, 0.4, s.d, 3, 0.13);
+        bGeo.translate(0, 0.2, 0);                     // 원점 = 바닥면 중심
+        const p = new THREE.Mesh(bGeo, BUTTER_MAT.clone());
+        p.position.set(s.x, s.top - 0.4, s.z);         // 바닥면 위치(윗면 = s.top 유지 → 점프 물리 불변)
         p.castShadow = true; p.receiveShadow = true;
         p.userData.waxIdx = i;
         if (s.goal) p.userData.jmGoal = true;
+        addButterPrint(p, s.w, s.d);                   // 포장 프린트(SALTED/BUTTER/4oz.) — 왁스 깨지면 드러남
         g.add(p); targets.push(p);
 
         // 왁스 셸 — 발판을 얇게 감싸는 크러스트(면별 보로노이 균열 조각, 두께 0.02).
         // targets 미포함(비주얼 전용) → 물리 불변. 착지 시 금이 간 뒤 조각이 하나씩 떨어져 나간다.
         const shellG = new THREE.Group();
-        shellG.position.copy(p.position);
+        shellG.position.set(s.x, s.top - 0.2, s.z);    // 크러스트는 발판 '중심' 기준(기존 좌표계 유지)
         g.add(shellG);
+
+        // 왁스 드립 — 윗면 가장자리에서 흘러내려 굳은 촛농 방울들(비주얼 전용, 깨지면 함께 사라짐)
+        // 성능: 방울 지오메트리를 발판당 1개 메시로 병합(드로우콜 10개 → 1개), 그림자 제외.
+        const dripMat = WAX_MAT.clone();
+        const dripGeos = [];
+        for (let k = 0; k < 5; k++) {
+            const side = k % 4;                        // ±x·±z 면에 고르게
+            const along = (Math.random() - 0.5) * (side < 2 ? s.d : s.w) * 0.78;
+            const len = 0.14 + Math.random() * 0.22;
+            const dx = side === 0 ? s.w / 2 + 0.03 : side === 1 ? -s.w / 2 - 0.03 : along;
+            const dz = side === 2 ? s.d / 2 + 0.03 : side === 3 ? -s.d / 2 - 0.03 : along;
+            const body = new THREE.CylinderGeometry(0.045, 0.07, len, 6);
+            body.translate(dx, 0.2 - len / 2, dz);
+            const tip = new THREE.SphereGeometry(0.075, 8, 6);
+            tip.translate(dx, 0.2 - len, dz);
+            dripGeos.push(body, tip);
+        }
+        const dripMesh = new THREE.Mesh(mergeGeometries(dripGeos), dripMat);
+        shellG.add(dripMesh);
+        const drips = [dripMesh];
+
         _waxShells[i] = {
             pieces: _buildWaxPieces(shellG, s.w, 0.4, s.d),
             queue: [], timer: 0, broken: false,
             cx: s.x, top: s.top, cz: s.z, w: s.w, d: s.d, group: g,
+            butter: p, squishT: 9,                     // 말랑이 스퀴시 상태(9=휴지)
+            drips, dripMat, dripFade: 1,
         };
 
         if (s.goal) {   // 골 깃발 — 왁스를 심지처럼 뚫고 나온 폴
@@ -260,6 +622,146 @@ export function createJumpMapArea(origin) {
             const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.55), new THREE.MeshBasicMaterial({ color: 0xFF5252, side: THREE.DoubleSide }));
             flag.position.set(s.x + s.w / 2 - 0.87, s.top + 1.85, s.z);
             g.add(flag);
+        }
+    });
+
+    // ---- 퐁실 푸딩 스텝: 3번째 계단(i=2, top 2.6)을 대형 푸딩 1개가 대체 ----
+    // 코스 흐름 불변: i=1(1.6) → 푸딩(2.6) → i=3(3.6). 접시 지름 ≈ 6.5(발판의 2배)라
+    // 원래 링 자리(반경 3.2)에선 이웃 발판과 몸통이 겹쳐 → 같은 각도에서 링 바깥(반경 6.0)으로
+    // 밀어 배치. 점프 검증: i=1→푸딩 상면 가장자리 +1.0 상승·간격 ≈2.45 ✓ / 푸딩→i=3 동일 ✓.
+    // 밟으면 보잉음 + 눌렸다 되튕기는 젤리 출렁, 서 있는 동안은 눌린 채 유지(버터와 동일 패턴).
+    _puddings.length = 0;
+    const custardMat = mat(0xFFD469, { roughness: 0.45, metalness: 0.05 });
+    const caramelMat = mat(0x8A4B14, { roughness: 0.35, metalness: 0.05 });
+    const saucerMat  = mat(0xF6F3EC, { roughness: 0.6, metalness: 0.05 });
+    const PUD_S = 3.7;                                 // 스케일 — 접시 지름 ≈ 6.5(발판 가로폭의 2배)
+    // 위치: 다음 발판(i=3) 쪽으로 붙인 지점 — 상면 가장자리→i=3 이 한 걸음 홉(간격 ≈1.0)이 되고,
+    // i=1→푸딩 진입도 간격 ≈2.2(+1.0)로 기존보다 쉬움. 이웃 발판 몸통과 3D 비겹침 검증 좌표.
+    const PUD_SPOTS = [
+        { x: -4.9, z: 8.9 },
+    ];
+    const pudTop = 0.6 + 2;                            // 카라멜 윗면(착지면) 2.6 — 대체한 발판과 동일
+    PUD_SPOTS.forEach((sp, i) => {
+        const pTop = pudTop;
+        const pgrp = new THREE.Group();
+        pgrp.position.set(sp.x, pTop - 0.66 * PUD_S, sp.z);   // 스케일 반영해 윗면 = pTop 유지
+        pgrp.scale.setScalar(PUD_S);
+        g.add(pgrp);
+        const saucer = new THREE.Mesh(new THREE.CylinderGeometry(0.82, 0.88, 0.06, 24), saucerMat);
+        saucer.position.y = 0.03;
+        saucer.castShadow = true; saucer.receiveShadow = true;
+        pgrp.add(saucer);
+        const jelly = new THREE.Group();               // 출렁이는 부분 — 원점 = 접시 윗면(바닥 기준 스케일)
+        jelly.position.y = 0.06;
+        pgrp.add(jelly);
+        const flanGeo = new THREE.CylinderGeometry(0.52, 0.68, 0.5, 24);
+        flanGeo.translate(0, 0.25, 0);
+        const flan = new THREE.Mesh(flanGeo, custardMat);
+        flan.castShadow = true; flan.receiveShadow = true;
+        flan.userData.puddingIdx = _puddings.length;
+        jelly.add(flan); targets.push(flan);
+        const capGeo = new THREE.CylinderGeometry(0.5, 0.55, 0.12, 24);
+        capGeo.translate(0, 0.54, 0);                  // 윗면 0.6 → 월드 pTop
+        const cap = new THREE.Mesh(capGeo, caramelMat);
+        cap.castShadow = true;
+        cap.userData.puddingIdx = flan.userData.puddingIdx;
+        jelly.add(cap); targets.push(cap);
+        // 카라멜 드립 — 윗단 가장자리에서 흘러내린 방울(왁스 드립처럼 병합 1메시, 그림자 제외)
+        const dripGeos2 = [];
+        for (let k = 0; k < 4; k++) {
+            const da = (k / 4) * Math.PI * 2 + i * 0.9;
+            const len = 0.12 + Math.random() * 0.14;
+            const dx = Math.sin(da) * 0.56, dz = Math.cos(da) * 0.56;
+            const b = new THREE.CylinderGeometry(0.05, 0.07, len, 6);
+            b.translate(dx, 0.5 - len / 2, dz);
+            const t = new THREE.SphereGeometry(0.075, 8, 6);
+            t.translate(dx, 0.5 - len, dz);
+            dripGeos2.push(b, t);
+        }
+        jelly.add(new THREE.Mesh(mergeGeometries(dripGeos2), caramelMat));
+        _puddings.push({ jelly, wobbleT: 9, phase: i * 2 });   // 둘이 어긋나게 숨쉬도록 위상 분리
+    });
+
+    // ---- 키캡 구간: 코스 중간(빠진 6번째 스텝 자리)을 잇는 "거대 기계식 키보드" 다리 ----
+    // 로블록스 키캡 발판 스타일: 다크 플레이트 케이스 위에 파스텔 키캡을 실제 배열로 깐다 —
+    // 높이 6칸(Ctrl→⇧→ASDF→QWERTY→숫자→F열) + 와이드 Shift/Enter/⌫ + 스페이스바(3u) + 스태거.
+    // 키필드 폭(5.5u)을 행 깊이(6u)보다 좁혀 진행 방향으로 세로로 눕힌 포트레이트 배치.
+    // 키·케이스 모두 단차 없는 평탄(전 키 top 5.85) — 걸어서 통과.
+    // 아래열 Ctrl 키가 idx4(top 4.6) 북쪽 모서리 바로 위(+1.25)라 수직 점프로 진입하고,
+    // 맨 윗열(F열) 왼쪽 Esc에서 idx6(top 6.6)으로 +0.75 점프해 합류 — 코스의 유일한 중간 통로.
+    // 키만 착지면(targets) — 케이스는 비주얼 전용이며 키를 서로 0.02 겹쳐 발 빠질 틈이 없다.
+    // 밟으면 클릭음 + 백라이트 플래시 + 눌림 애니.
+    _keycaps.length = 0;
+    const PASTEL = [0xFFC1CC, 0xB5EAD7, 0xFFF3B0, 0xC7CEEA, 0xFFDAB9, 0xAEE1F9, 0xD4F0C0, 0xFFB7B2, 0xE2C6F5];
+    const KB_U = 0.95;                                 // 1u 키 피치(월드 단위)
+    const KB_W = 5.5;                                  // 키필드 전체 폭(u) — 좌측 끝 v = -KB_W/2
+    const KB_ROWS = [                                  // 아래(진입)행 → 위. [각인, 폭(u)], off = 스태거(u)
+        { off: 0,    keys: [['Ctrl', 1.25], ['🐾', 3], ['뿌', 1.25]] },
+        { off: 0,    keys: [['⇧', 1.5], ['Z', 1], ['X', 1], ['C', 1], ['V', 1]] },
+        { off: 0,    keys: [['A', 1], ['S', 1], ['D', 1], ['F', 1], ['⏎', 1.5]] },
+        { off: 0.25, keys: [['Q', 1], ['W', 1], ['E', 1], ['R', 1], ['T', 1]] },
+        { off: 0,    keys: [['1', 1], ['2', 1], ['3', 1], ['4', 1], ['⌫', 1.5]] },
+        { off: 0,    keys: [['Esc', 1.5], ['F1', 1], ['F2', 1], ['F3', 1], ['F4', 1]] },
+    ];
+    const KB_N = KB_ROWS.length;                       // 행 수(높이 6칸)
+    // 다리 축: 아래열 중심 KA → idx6 방향 (0.8,-0.6), 수직 (0.6,0.8).
+    // KA는 키필드 폭(5.5u) 기준으로 Ctrl 키가 idx4 북쪽 모서리 바로 위에 오도록 잡은 위치.
+    const KA = { x: 1.395, z: 13.86 }, KDIR = { x: 0.8, z: -0.6 }, KPERP = { x: 0.6, z: 0.8 };
+    const KYAW = Math.atan2(KDIR.x, KDIR.z);
+    const KB_TOP = 5.85;                               // 전 키 공통 top — 단차 없는 평탄 키보드
+    const kbPos = (u, v) => ({ x: KA.x + KDIR.x * u + KPERP.x * v, z: KA.z + KDIR.z * u + KPERP.z * v });
+
+    // 케이스(다크 플레이트) — 키 밑면보다 0.58 아래(백라이트 갭), 수평. 비주얼 전용(targets 미포함).
+    const caseTopMidY = KB_TOP - 0.58;                 // 키 높이 기준 케이스 상면
+    const caseC = kbPos((KB_N - 1) / 2 * KB_U, 0);
+    const kbCase = new THREE.Mesh(
+        new RoundedBoxGeometry(KB_W * KB_U + 0.5, 0.35, KB_N * KB_U + 0.6, 2, 0.12),
+        new THREE.MeshStandardMaterial({ color: 0x353A45, roughness: 0.55, metalness: 0.3 })
+    );
+    kbCase.position.set(caseC.x, caseTopMidY - 0.175, caseC.z);
+    kbCase.rotation.y = KYAW;
+    kbCase.castShadow = true; kbCase.receiveShadow = true;
+    g.add(kbCase);
+
+    let kbIdx = 0;
+    KB_ROWS.forEach((rowDef, row) => {
+        const rowTop = KB_TOP;
+        let cum = rowDef.off;
+        for (const [ch, wu] of rowDef.keys) {
+            const v = (cum + wu / 2 - KB_W / 2) * KB_U;
+            cum += wu;
+            const p = kbPos(row * KB_U, v);
+            const kw = wu * KB_U + 0.02, kd = KB_U + 0.02;         // 이웃 키와 0.02 겹침
+            // 몸체 — 파스텔 키캡(광택 플라스틱) + 동색 백라이트(emissive)
+            const accent = PASTEL[(row * 4 + Math.round(cum * 2)) % PASTEL.length];
+            const body = new THREE.Mesh(
+                new RoundedBoxGeometry(kw, 0.5, kd, 2, 0.09),
+                new THREE.MeshStandardMaterial({ color: accent, roughness: 0.35, metalness: 0.05, emissive: accent, emissiveIntensity: 0.12 })
+            );
+            body.position.set(p.x, rowTop - 0.25, p.z);
+            body.rotation.y = KYAW;
+            body.castShadow = true; body.receiveShadow = true;
+            body.userData.keycapIdx = kbIdx;
+            g.add(body); targets.push(body);
+            // 상판 각인 — 진한 잉크 글자(이모지는 자체 색). emissiveMap으로 은은한 투과광.
+            const tex = keycapTex(ch, '#5B5566', wu);
+            const plate = new THREE.Mesh(
+                new THREE.PlaneGeometry(kw - 0.16, kd - 0.16).rotateX(-Math.PI / 2),
+                new THREE.MeshStandardMaterial({ map: tex, transparent: true, roughness: 0.5, emissive: 0xFFFFFF, emissiveMap: tex, emissiveIntensity: 0.5 })
+            );
+            plate.position.set(p.x, rowTop + 0.006, p.z);
+            plate.rotation.y = KYAW;
+            g.add(plate);
+            // 언더글로우 — 케이스 바닥 아래에서 새어 나오는 RGB(수평)
+            const glow = new THREE.Mesh(
+                new THREE.PlaneGeometry(kw + 0.4, kd + 0.4).rotateX(-Math.PI / 2),
+                new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide })
+            );
+            glow.position.set(p.x, caseTopMidY - 0.38, p.z);
+            glow.rotation.y = KYAW;
+            g.add(glow);
+            _keycaps.push({ body, plate, glow, baseY: body.position.y, plateY: plate.position.y, glowState: 0, pressT: 9 });
+            kbIdx++;
         }
     });
 
@@ -302,7 +804,7 @@ function _clipHalfPlane(poly, mx, my, dx, dy) {
  * 씨앗점은 지터 그리드(균등 커버리지 + 랜덤)로 뿌리고,
  * 각 셀 = 사각형을 다른 모든 씨앗과의 수직이등분 반평면으로 클리핑한 볼록 다각형.
  */
-function _voronoiCells(fw, fh, cell = 0.7) {
+function _voronoiCells(fw, fh, cell = 0.85) {   // 성능: 셀 0.7→0.85 — 조각 수 ~30% 감소(균열 look 유지)
     const nx = Math.max(2, Math.round(fw / cell)), ny = Math.max(1, Math.round(fh / cell));
     const seeds = [];
     for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
@@ -356,12 +858,13 @@ function _buildWaxPieces(parent, w, h, d, t = 0.02) {
             const geo = new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: false });
             if (bake) bake(geo);
             const [px, py, pz] = place(cu, cv);
-            const m = new THREE.Mesh(geo, WAX_MAT.clone());
+            // 성능: 재질은 공유(WAX_MAT) — 페이드용 클론은 조각이 실제로 떨어질 때(_detachPiece) 지연 생성
+            const m = new THREE.Mesh(geo, WAX_MAT);
             m.position.set(px, py, pz);
-            m.castShadow = true;
+            m.castShadow = false;   // 성능: 조각 수백 개가 그림자 패스에 들어가면 착지 순간 프레임 드랍(발판 그림자로 충분)
             parent.add(m);
             pieces.push({
-                mesh: m, mat: m.material,
+                mesh: m, mat: null,                    // 낙하 시작 시 클론 재질 할당(이후 재사용)
                 hx: px, hy: py, hz: pz,                // 원위치(리셋 복구용)
                 state: 0,                              // 0 붙어있음 · 1 낙하 중 · 2 소멸
                 vx: 0, vy: 0, vz: 0, rx: 0, rz: 0, age: 0, life: 1,
@@ -381,7 +884,9 @@ export function onWaxStep(mesh) {
     const idx = mesh && mesh.userData.waxIdx;
     if (idx === undefined || idx === null) return false;
     const wx = _waxShells[idx];
-    if (!wx || wx.broken) return false;
+    if (!wx) return false;
+    wx.squishT = 0;                                    // 버터 말랑이 — 밟을 때마다 출렁(깨진 뒤에도)
+    if (wx.broken) return false;
     wx.broken = true;
     // 금 가기 — 조각들이 제자리에서 미세하게 어긋나며 균열선만 드러난다(아직 안 떨어짐)
     for (const pc of wx.pieces) {
@@ -404,10 +909,23 @@ export function onWaxStep(mesh) {
     return true;
 }
 
+/** 푸딩 밟음/서 있음 — 서 있는 동안 매 프레임 호출돼 눌린 채 유지(no-op 저렴). landed=true(첫 착지)면 보잉음. */
+export function onPuddingStep(mesh, landed = false) {
+    const idx = mesh && mesh.userData.puddingIdx;
+    if (idx === undefined || idx === null) return false;
+    const pd = _puddings[idx];
+    if (!pd) return false;
+    if (landed) _boing();
+    pd.wobbleT = 0;                                    // 0 유지 → 눌림, 떠나면 감쇠 진동으로 되튕김
+    return true;
+}
+
 /** 조각 하나를 셸에서 떼어내 낙하 시작(바깥쪽으로 살짝 밀리며 톡 소리). */
 function _detachPiece(pc) {
     if (pc.state !== 0) return;
     pc.state = 1;
+    if (!pc.mat) { pc.mat = WAX_MAT.clone(); }         // 페이드용 클론 재질 — 낙하 시점에 지연 생성(이후 재사용)
+    pc.mesh.material = pc.mat;
     const len = Math.hypot(pc.hx, pc.hz) || 1;
     const sp = 0.4 + Math.random() * 0.6;
     pc.vx = (pc.hx / len) * sp + (Math.random() - 0.5) * 0.3;
@@ -427,12 +945,17 @@ export function isWaxStarted() { return _waxShells.some((w) => w.broken); }
 export function resetWax() {
     for (const w of _waxShells) {
         w.broken = false; w.queue.length = 0; w.timer = 0;
+        // 버터·드립 원상 복구
+        w.squishT = 9;
+        if (w.butter) w.butter.scale.set(1, 1, 1);
+        if (w.dripMat) { w.dripFade = 1; w.dripMat.opacity = 1; w.dripMat.transparent = false; }
+        if (w.drips) for (const d of w.drips) d.visible = true;
         for (const pc of w.pieces) {
             pc.state = 0;
             pc.mesh.visible = true;
             pc.mesh.position.set(pc.hx, pc.hy, pc.hz);
             pc.mesh.rotation.set(0, 0, 0);
-            pc.mat.opacity = 1; pc.mat.transparent = false;
+            if (pc.mat) { pc.mat.opacity = 1; pc.mat.transparent = false; }   // 클론은 낙하 경험 조각에만 존재
         }
     }
 }
@@ -510,6 +1033,54 @@ export function updateJumpmap(elapsed, delta = 0) {
         const pulse = 1 + Math.sin(elapsed * 3) * 0.35;
         p.ring.material.emissiveIntensity = p.baseInt * pulse;
         if (p.disc) p.disc.material.opacity = 0.28 + Math.sin(elapsed * 3) * 0.12;
+    }
+    // 키캡: 눌림(가라앉았다 복귀) + 백라이트 플래시 감쇠 + 평상시 RGB 브리딩
+    for (let i = 0; i < _keycaps.length; i++) {
+        const kc = _keycaps[i];
+        if (kc.pressT < 0.5) {   // 눌림 애니(0.18s 반주기 사인)
+            kc.pressT += delta;
+            const dip = Math.max(0, Math.sin(Math.min(1, kc.pressT / 0.18) * Math.PI)) * 0.07;
+            kc.body.position.y = kc.baseY - dip;
+            kc.plate.position.y = kc.plateY - dip;
+        }
+        if (kc.glowState > 0.01) kc.glowState *= Math.exp(-3.2 * delta);
+        else kc.glowState = 0;
+        const breath = 0.06 + Math.sin(elapsed * 2 + i * 1.15) * 0.05;   // RGB 브리딩
+        kc.body.material.emissiveIntensity = 0.1 + breath + kc.glowState * 1.7;
+        kc.glow.material.opacity = 0.1 + breath * 0.8 + kc.glowState * 0.6;
+        kc.plate.material.emissiveIntensity = 0.45 + kc.glowState * 0.9;
+    }
+    // 버터 말랑이: 밟으면 스퀴시(감쇠 진동) + 평상시 미세 숨쉬기 · 크러스트 깨지면 드립도 함께 사라짐
+    for (let i = 0; i < _waxShells.length; i++) {
+        const wx = _waxShells[i];
+        if (!wx.butter) continue;
+        let off = Math.sin(elapsed * 1.7 + i * 1.3) * 0.018;   // 숨쉬기(아주 미세)
+        if (wx.squishT < 1.2) {
+            wx.squishT += delta;
+            off += -0.3 * Math.exp(-5 * wx.squishT) * Math.cos(12 * wx.squishT);   // 눌렸다 되튕기는 감쇠 진동
+        }
+        wx.butter.scale.set(1 - off * 0.55, 1 + off, 1 - off * 0.55);   // 눌리면 옆으로 퍼짐(부피 보존 느낌)
+        if (wx.broken && wx.dripFade > 0) {
+            wx.dripFade = Math.max(0, wx.dripFade - delta * 1.6);
+            wx.dripMat.transparent = true;
+            wx.dripMat.opacity = wx.dripFade;
+            if (wx.dripFade === 0) for (const d of wx.drips) d.visible = false;
+        }
+    }
+    // 퐁실 푸딩: 평상시 탱글 숨쉬기 + 밟으면 눌렸다 되튕기는 젤리 출렁(감쇠 진동·좌우 살랑)
+    for (const pd of _puddings) {
+        let sy = 1 + Math.sin(elapsed * 2.2 + pd.phase * 2.1) * 0.03;
+        let lean = Math.sin(elapsed * 1.6 + pd.phase * 1.7) * 0.02;
+        if (pd.wobbleT < 1.5) {
+            pd.wobbleT += delta;
+            const osc = Math.exp(-4 * pd.wobbleT);
+            sy += -0.34 * osc * Math.cos(13 * pd.wobbleT);
+            lean += 0.09 * osc * Math.sin(10 * pd.wobbleT);
+        }
+        const sxz = 1 - (sy - 1) * 0.65;               // 눌리면 옆으로 퍼짐(부피 보존 느낌)
+        pd.jelly.scale.set(sxz, sy, sxz);
+        pd.jelly.rotation.z = lean;
+        pd.jelly.rotation.x = lean * 0.6;
     }
     // 금 간 셸: 타이머마다 큐에서 조각을 하나씩 떼어내고, 떨어지는 조각의 물리를 갱신
     for (const wx of _waxShells) {

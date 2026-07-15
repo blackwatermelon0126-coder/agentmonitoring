@@ -9,22 +9,23 @@
         * { margin: 0; padding: 0; }
         body { background: #87CEEB; overflow: hidden; }
         canvas { display: block; }
+        /* z-index 60: 2D 탑다운 캔버스(map2d, z 50) 위에 유지 */
         #info {
-            position: absolute; top: 10px; left: 50%;
+            position: absolute; top: 10px; left: 50%; z-index: 60;
             transform: translateX(-50%);
             color: #fff; font-family: monospace; font-size: 14px;
             background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 8px;
             backdrop-filter: blur(4px);
         }
         #status-panel {
-            position: absolute; bottom: 70px; left: 10px;
+            position: absolute; bottom: 70px; left: 10px; z-index: 60;
             color: #fff; font-family: monospace; font-size: 11px;
             background: rgba(0,0,0,0.6); padding: 12px; border-radius: 8px;
             min-width: 280px; backdrop-filter: blur(4px);
         }
         .agent-detail { color: #aaa; font-size: 10px; margin-left: 16px; word-break: break-all; }
         #people-panel {
-            position: absolute; top: 10px; right: 10px;
+            position: absolute; top: 10px; right: 10px; z-index: 60;
             color: #fff; font-family: monospace; font-size: 12px;
             background: rgba(0,0,0,0.6); padding: 10px 14px; border-radius: 8px;
             backdrop-filter: blur(4px);

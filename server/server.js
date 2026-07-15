@@ -352,6 +352,15 @@ app.get('/api/status', (req, res) => {
     });
 });
 
+// 개발 편의: 접속 중인 3D 클라이언트 전체 새로고침 + 작업 위치로 이동 (Claude Code 작업 완료 시 호출)
+// body.goto(선택) = { map: 'office'|'jumpmap', x, z, y?, view?: { pos:[x,y,z], target:[x,y,z] } }
+//   - jumpmap이면 좌표는 점프맵 로컬 기준(클라이언트가 JUMPMAP_ORIGIN 오프셋을 더함)
+// 클라이언트는 goto를 sessionStorage에 저장하고 reload → 로드 후 아바타 준비되면 이동.
+app.post('/api/dev/reload', requireLoopback, (req, res) => {
+    broadcast({ type: 'dev-reload', goto: (req.body && req.body.goto) || null });
+    res.json({ ok: true, clients: wss.clients.size });
+});
+
 // 데모 이벤트 (테스트용)
 // P4-B: requireLoopback — 루프백 외 주소에서 온 요청은 403 반환.
 app.post('/demo', requireLoopback, (req, res) => {
@@ -820,6 +829,66 @@ function startOrderScheduler() {
     setInterval(tickOrderSchedule, 30 * 1000);
     logger.info({ event: 'order_scheduler_started' }, '주문 스케줄러 시작(월 09:00·09:18·09:20·10:00, 공휴일 제외)');
 }
+
+// ══════════════════════════════════════════════════════════════════
+// 테트리스 타워 순위 (TETRIS-RANK)
+//  - 사람(email)별 최고 점수 1건만 보관(개인 최고 갱신 시에만 저장).
+//  - 순위 = 점수 내림차순, 동점은 먼저 달성한 사람 우선.
+//  - 최고가 갱신되면 tetris-ranking 브로드캐스트 → 3D 타워 순위판 실시간 갱신.
+// ══════════════════════════════════════════════════════════════════
+const TETRIS_PATH = process.env.TETRIS_STORE || path.join(__dirname, 'data', 'tetris-scores.json');
+
+function loadTetrisScores() {
+    try { if (!existsSync(TETRIS_PATH)) return []; return JSON.parse(readFileSync(TETRIS_PATH, 'utf8')); }
+    catch { return []; }
+}
+function saveTetrisScores(list) {
+    const dir = path.dirname(TETRIS_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(TETRIS_PATH, JSON.stringify(list, null, 2), 'utf8');
+}
+
+let tetrisScores = loadTetrisScores();   // [{ email, name, score, lines, level, updatedAt }]
+
+/** 점수 내림차순(동점은 updatedAt 오름차순 = 먼저 달성한 사람 우선) 정렬 사본 */
+function tetrisRanking() {
+    return [...tetrisScores].sort((a, b) => (b.score - a.score) || String(a.updatedAt).localeCompare(String(b.updatedAt)));
+}
+
+/** GET /api/tetris/ranking — 전체 순위(점수 내림차순) */
+app.get('/api/tetris/ranking', (req, res) => res.json({ ranking: tetrisRanking() }));
+
+/** POST /api/tetris/score — 게임 종료 점수 제출 { email, name, score, lines, level }. 개인 최고만 반영 */
+app.post('/api/tetris/score', (req, res) => {
+    const { email, name, score, lines, level } = req.body || {};
+    const sc = Math.floor(Number(score));
+    if (!email || !Number.isFinite(sc) || sc <= 0) return res.status(400).json({ error: 'email과 양수 score는 필수입니다.' });
+    const key = String(email).toLowerCase();
+    let entry = tetrisScores.find(t => t.email === key);
+    let improved = false;
+    if (!entry) {
+        entry = { email: key, name: name || key, score: sc, lines: Math.floor(Number(lines)) || 0, level: Math.floor(Number(level)) || 0, updatedAt: new Date().toISOString() };
+        tetrisScores.push(entry);
+        improved = true;
+    } else {
+        entry.name = name || entry.name;               // 표시 이름은 항상 최신으로
+        if (sc > entry.score) {
+            entry.score = sc;
+            entry.lines = Math.floor(Number(lines)) || 0;
+            entry.level = Math.floor(Number(level)) || 0;
+            entry.updatedAt = new Date().toISOString();
+            improved = true;
+        }
+    }
+    const ranking = tetrisRanking();
+    if (improved) {
+        saveTetrisScores(tetrisScores);
+        broadcast({ type: 'tetris-ranking', ranking });
+        logger.info({ event: 'tetris_score', email: key, score: sc }, `테트리스 최고 점수 갱신: ${entry.name} ${sc}`);
+    }
+    const rank = ranking.findIndex(t => t.email === key) + 1;
+    res.json({ ok: true, improved, best: entry.score, rank, total: ranking.length, ranking });
+});
 
 // ══════════════════════════════════════════════════════════════════
 // 식단표 (MEALPLAN-01)
