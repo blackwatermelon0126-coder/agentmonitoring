@@ -53,13 +53,20 @@ export function openTetris({ onClose, player = null } = {}) {
     let best = parseInt(localStorage.getItem(BEST_KEY) || '0', 10) || 0;
     let over = false, paused = false;
     let dropAcc = 0, lastTs = 0, rafId = 0;
+    // 자체 키 반복(DAS/ARR) — OS 자동반복(첫 지연 ~500ms·마지막 키만 반복)에 의존하지 않고
+    // 게임 표준 조작감을 제공: 이동키 유지 시 DAS 후 ARR 간격 반복, ←/→ 유지 중 회전 등 동시 조작 허용.
+    const DAS_MS = 170;   // 이동키 유지 → 자동 반복 시작까지 지연
+    const ARR_MS = 45;    // 좌우 자동 반복 간격
+    const SDR_MS = 50;    // 소프트드롭(↓) 반복 간격
+    const heldKeys = new Map();   // code → { nextAt } — ←/→/↓만 추적, rAF 루프(repeatHeld)에서 소비
 
     // ---- DOM ----
     // 셀 크기 — 보드가 화면 높이를 거의 채우도록 열 때마다 동적 계산(작은 창에서도 최소 26px)
     const CELL = Math.max(26, Math.floor((window.innerHeight - 120) / ROWS));
     const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.88);'
-        + 'backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;'
+    // backdrop-filter(블러)는 쓰지 않는다 — 밑 3D 캔버스 위 매 프레임 재블러 합성 비용으로 키 반응이 늦어짐
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.92);'
+        + 'display:flex;align-items:center;justify-content:center;'
         + 'font-family:sans-serif;color:#fff;';
     const panel = document.createElement('div');
     panel.style.cssText = 'display:flex;gap:18px;align-items:flex-start;background:#0d1117;'
@@ -290,12 +297,15 @@ export function openTetris({ onClose, player = null } = {}) {
         hold = null; holdUsed = false;
         score = 0; lines = 0; level = 0;
         over = false; paused = false; dropAcc = 0;
+        heldKeys.clear();                            // 게임오버 중 눌려 있던 키 잔존 반복 방지
         banner.style.display = 'none';
         nextPiece();
     }
     function togglePause() {
         if (over) return;
         paused = !paused;
+        // 재개 시 유지 키 반복 시점 재정렬 — 정지 동안 밀린 시간만큼 한꺼번에 이동하는 폭주 방지
+        if (!paused) { const now = performance.now(); heldKeys.forEach((st) => { st.nextAt = now + DAS_MS; }); }
         banner.style.display = paused ? 'flex' : 'none';
         if (paused) banner.innerHTML = '<div style="font-size:22px;font-weight:800;">⏸ PAUSED</div><div style="font-size:13px;color:#B0BEC5;">P 키로 계속</div>';
     }
@@ -358,6 +368,7 @@ export function openTetris({ onClose, player = null } = {}) {
         const dt = lastTs ? ts - lastTs : 0;
         lastTs = ts;
         if (!over && !paused) {
+            repeatHeld(ts);
             dropAcc += dt;
             const interval = Math.max(110, 780 - level * 65);  // 레벨업 → 낙하 가속
             while (dropAcc >= interval) { dropAcc -= interval; step(); if (over) break; }
@@ -366,6 +377,21 @@ export function openTetris({ onClose, player = null } = {}) {
     }
 
     // ---- 입력 ----
+    /** 유지 중인 이동키 1칸 적용 — keydown 즉시 이동과 자동 반복(repeatHeld)이 공유 */
+    function moveHeld(code) {
+        if (code === 'ArrowLeft')       { if (!collides(cur, -1, 0, cur.m)) cur.x--; }
+        else if (code === 'ArrowRight') { if (!collides(cur, 1, 0, cur.m)) cur.x++; }
+        else if (code === 'ArrowDown')  { if (!collides(cur, 0, 1, cur.m)) { cur.y++; score++; } dropAcc = 0; }
+    }
+    /** 매 프레임: DAS 지연이 지난 유지 키를 ARR/SDR 간격으로 반복 이동(밀린 시간 폭주는 ROWS로 상한) */
+    function repeatHeld(ts) {
+        if (over || paused || !cur) return;
+        for (const [code, st] of heldKeys) {
+            const interval = code === 'ArrowDown' ? SDR_MS : ARR_MS;
+            let n = 0;
+            while (ts >= st.nextAt && n++ < ROWS) { moveHeld(code); st.nextAt += interval; }
+        }
+    }
     function onKey(e) {
         if (!_open) return;
         // 오버레이가 모든 게임 키를 소비 — 페이지 스크롤·씬 단축키 차단
@@ -373,18 +399,27 @@ export function openTetris({ onClose, player = null } = {}) {
         if (!used.includes(e.code)) return;
         e.preventDefault();
         e.stopPropagation();
+        if (e.repeat) return;                       // OS 자동반복 무시 — 반복은 repeatHeld(DAS/ARR)가 전담
         if (e.code === 'Escape') { close(); return; }
         if (e.code === 'KeyP') { togglePause(); return; }
         if (over || paused || !cur) return;
-        if (e.code === 'ArrowLeft' && !collides(cur, -1, 0, cur.m)) cur.x--;
-        else if (e.code === 'ArrowRight' && !collides(cur, 1, 0, cur.m)) cur.x++;
-        else if (e.code === 'ArrowDown') { if (!collides(cur, 0, 1, cur.m)) { cur.y++; score++; } dropAcc = 0; }
+        if (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'ArrowDown') {
+            // 좌↔우는 마지막 입력 우선(반대 방향 반복 해제) — 유지+반전 시 떨림 방지
+            if (e.code === 'ArrowLeft') heldKeys.delete('ArrowRight');
+            else if (e.code === 'ArrowRight') heldKeys.delete('ArrowLeft');
+            moveHeld(e.code);                       // 누르는 즉시 1칸
+            heldKeys.set(e.code, { nextAt: performance.now() + DAS_MS });
+        }
         else if (e.code === 'ArrowUp') rotate();
         else if (e.code === 'Space') hardDrop();
         else if (e.code === 'KeyC') doHold();
     }
+    function onKeyUp(e) { heldKeys.delete(e.code); }
+    const onBlur = () => heldKeys.clear();          // Alt+Tab 등 포커스 이탈 시 키 stuck 방지
     // capture 단계 등록 — scene.js 핸들러보다 확실히 선점(가드 __tetrisActive와 이중 안전)
     window.addEventListener('keydown', onKey, true);
+    window.addEventListener('keyup', onKeyUp, true);
+    window.addEventListener('blur', onBlur);
 
     function close() {
         if (!_open) return;
@@ -392,6 +427,8 @@ export function openTetris({ onClose, player = null } = {}) {
         window.__tetrisActive = false;
         cancelAnimationFrame(rafId);
         window.removeEventListener('keydown', onKey, true);
+        window.removeEventListener('keyup', onKeyUp, true);
+        window.removeEventListener('blur', onBlur);
         overlay.remove();
         if (onClose) onClose(score);
     }
